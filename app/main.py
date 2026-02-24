@@ -8,6 +8,9 @@ from pdf2image import convert_from_path
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from openai import OpenAI
+from pydantic import BaseModel
+
+from app import odoo_crm
 
 MAX_PAGES_PER_PDF = int(os.getenv("MAX_PAGES_PER_PDF", "5"))
 TOP_K_PAGES = int(os.getenv("TOP_K_PAGES", "3"))
@@ -250,3 +253,43 @@ async def ocr(
                 raise HTTPException(status_code=422, detail=f"Erro ao processar '{upload.filename}': {exc}")
             result[upload.filename] = pages
     return JSONResponse(result)
+
+
+# ---------------------------------------------------------------------------
+# Odoo CRM endpoints
+# ---------------------------------------------------------------------------
+
+class CRMWebhookPayload(BaseModel):
+    lead_id: int
+
+
+@app.post("/v1/crm/webhook", summary="Webhook: processa lead do Odoo CRM pelo ID")
+async def crm_webhook(payload: CRMWebhookPayload):
+    """Receive a Lead ID via webhook, post the Nanobot message and move it to IN PROGRESS."""
+    try:
+        result = odoo_crm.process_lead(payload.lead_id)
+    except EnvironmentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Erro ao processar lead no Odoo: {exc}")
+    return JSONResponse(result)
+
+
+@app.post("/v1/crm/process-initial-leads", summary="Processa todos os leads em estágio INITIAL no Odoo CRM")
+async def process_initial_leads():
+    """Fetch all leads in the INITIAL stage, post the Nanobot message and move them to IN PROGRESS."""
+    try:
+        results = odoo_crm.process_all_initial_leads()
+    except EnvironmentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Erro ao processar leads no Odoo: {exc}")
+    return JSONResponse({"processed": results, "total": len(results)})
