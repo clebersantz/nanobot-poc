@@ -1,3 +1,4 @@
+import json
 import os
 import math
 import pathlib
@@ -40,16 +41,6 @@ KB_BUILD_COMMANDS = (
     "build kb",
     "construir base de conhecimento",
     "treinar base de conhecimento",
-)
-ODOO_CHECK_CONNECTION_COMMANDS = (
-    "check connection with odoo",
-    "check odoo connection",
-    "test odoo connection",
-    "connect to odoo",
-    "conectar ao odoo",
-    "conectar com odoo",
-    "verificar conexão com odoo",
-    "verificar conexao com odoo",
 )
 
 _kb_chunks: List[dict] = []
@@ -284,6 +275,38 @@ def _odoo_connect():
 
 
 # ---------------------------------------------------------------------------
+# ODOO Tools – OpenAI function-calling definitions
+# ---------------------------------------------------------------------------
+
+ODOO_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "odoo_check_connection",
+            "description": (
+                "Attempt to connect and authenticate to the ODOO CRM instance "
+                "configured in the environment. Use this whenever the user asks to "
+                "connect to ODOO, test/check the ODOO connection, or verify whether "
+                "the ODOO integration is working."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+]
+
+
+def _execute_odoo_tool(tool_name: str, _tool_args: dict) -> str:
+    """Execute an ODOO tool call and return the result as a plain string."""
+    if tool_name == "odoo_check_connection":
+        try:
+            uid, _ = _odoo_connect()
+            return f"ODOO connection successful. Authenticated user ID: {uid}."
+        except HTTPException as exc:
+            return f"ODOO connection failed: {exc.detail}"
+    return f"Unknown ODOO tool: {tool_name}"
+
+
+# ---------------------------------------------------------------------------
 # POST /v1/chat
 # ---------------------------------------------------------------------------
 
@@ -305,23 +328,6 @@ async def chat(
                 "answer": answer,
                 "used_sources": [],
                 "agent_action": "build_knowledge_base",
-            }
-        )
-
-    if any(cmd in message_normalized for cmd in ODOO_CHECK_CONNECTION_COMMANDS):
-        try:
-            uid, _ = _odoo_connect()  # models proxy intentionally unused in chat status check
-            answer = f"ODOO connection successful. Authenticated user id: {uid}."
-            connected = True
-        except HTTPException as exc:
-            answer = f"ODOO connection failed: {exc.detail}"
-            connected = False
-        return JSONResponse(
-            {
-                "answer": answer,
-                "used_sources": [],
-                "agent_action": "check_odoo_connection",
-                "odoo_connected": connected,
             }
         )
 
@@ -360,8 +366,12 @@ async def chat(
     context_text = "\n\n---\n\n".join(context_parts)
 
     system_prompt = (
-        "Você é um assistente especializado em análise de documentos e base de conhecimento. "
-        "Responda APENAS com base nas fontes fornecidas. "
+        "Você é um assistente especializado em análise de documentos, base de conhecimento "
+        "e integração com o sistema ODOO CRM. "
+        "Quando o usuário solicitar operações no ODOO (como verificar/testar a conexão, "
+        "conectar ao ODOO, etc.), use as ferramentas disponíveis para executar a operação "
+        "real e retorne o resultado obtido. "
+        "Para outras perguntas, responda com base nas fontes fornecidas. "
         "Se a resposta não estiver nas fontes, diga que não encontrou a informação. "
         "Seja preciso e conciso."
     )
@@ -378,11 +388,59 @@ async def chat(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
+            tools=ODOO_TOOLS,
+            tool_choice="auto",
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Erro na API OpenAI: {exc}")
 
-    answer = completion.choices[0].message.content or ""
+    choice = completion.choices[0]
+
+    # If the LLM decided to call one or more ODOO tools, execute them and get
+    # a follow-up natural-language answer from the model.
+    if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+        tool_messages: List[dict] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+            choice.message,  # assistant message containing the tool_calls
+        ]
+        agent_actions = []
+        for tool_call in choice.message.tool_calls:
+            tool_name = tool_call.function.name
+            try:
+                tool_args = json.loads(tool_call.function.arguments or "{}")
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Invalid arguments for tool '{tool_name}': {exc}",
+                )
+            tool_result = _execute_odoo_tool(tool_name, tool_args)
+            agent_actions.append(tool_name)
+            tool_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": tool_result,
+                }
+            )
+        try:
+            follow_up = client.chat.completions.create(
+                model="gpt-4o-mini",
+                temperature=0.2,
+                messages=tool_messages,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Erro na API OpenAI: {exc}")
+        answer = follow_up.choices[0].message.content or ""
+        return JSONResponse(
+            {
+                "answer": answer,
+                "used_sources": [],
+                "agent_action": agent_actions,
+            }
+        )
+
+    answer = choice.message.content or ""
     used_sources = [p["source"] for p in top_pages]
     if kb_chunks:
         used_sources += [f"KB: {c['source']}" for c in kb_chunks]
