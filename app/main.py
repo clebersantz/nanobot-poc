@@ -35,6 +35,19 @@ AGENT_MESSAGE = "Hello! This Lead has been processed by ODOO CRM Lead AI Agent"
 KB_DIR = pathlib.Path(__file__).parent.parent / "docs" / "kb"
 KB_CHUNK_SIZE_CHARS = int(os.getenv("KB_CHUNK_SIZE_CHARS", "1000"))
 KB_TOP_K = int(os.getenv("KB_TOP_K", "5"))
+KB_BUILD_COMMANDS = (
+    "build knowledge base",
+    "build kb",
+    "construir base de conhecimento",
+    "treinar base de conhecimento",
+)
+ODOO_CHECK_CONNECTION_COMMANDS = (
+    "check connection with odoo",
+    "check odoo connection",
+    "test odoo connection",
+    "verificar conexão com odoo",
+    "verificar conexao com odoo",
+)
 
 _kb_chunks: List[dict] = []
 _kb_embeddings: List[List[float]] = []
@@ -219,14 +232,22 @@ def _load_kb_chunks() -> List[dict]:
     return chunks
 
 
+def _build_kb_index(force: bool = False) -> dict:
+    """Build KB chunks and embeddings explicitly when requested by user."""
+    global _kb_chunks, _kb_embeddings, _kb_loaded
+    if _kb_loaded and not force:
+        return {"loaded": True, "chunks": len(_kb_chunks)}
+    _kb_chunks = _load_kb_chunks()
+    _kb_embeddings = _embed([c["text"] for c in _kb_chunks]) if _kb_chunks else []
+    _kb_loaded = True
+    return {"loaded": True, "chunks": len(_kb_chunks)}
+
+
 def _get_kb_context(query: str) -> List[dict]:
     """Return top-K most relevant KB chunks for the query."""
     global _kb_chunks, _kb_embeddings, _kb_loaded
     if not _kb_loaded:
-        _kb_chunks = _load_kb_chunks()
-        if _kb_chunks:
-            _kb_embeddings = _embed([c["text"] for c in _kb_chunks])
-        _kb_loaded = True
+        return []
     if not _kb_chunks:
         return []
     query_emb = _embed([query])[0]
@@ -268,6 +289,39 @@ async def chat(
     message: str = Form(...),
     files: List[UploadFile] = File(default=[]),
 ):
+    message_normalized = message.strip().lower()
+
+    if any(cmd in message_normalized for cmd in KB_BUILD_COMMANDS):
+        try:
+            kb_status = _build_kb_index()
+            answer = f"Knowledge base built successfully. Total chunks indexed: {kb_status['chunks']}."
+        except Exception as exc:
+            answer = f"Failed to build knowledge base: {exc}"
+        return JSONResponse(
+            {
+                "answer": answer,
+                "used_sources": [],
+                "agent_action": "build_knowledge_base",
+            }
+        )
+
+    if any(cmd in message_normalized for cmd in ODOO_CHECK_CONNECTION_COMMANDS):
+        try:
+            uid, _ = _odoo_connect()  # models proxy intentionally unused in chat status check
+            answer = f"ODOO connection successful. Authenticated user id: {uid}."
+            connected = True
+        except HTTPException as exc:
+            answer = f"ODOO connection failed: {exc.detail}"
+            connected = False
+        return JSONResponse(
+            {
+                "answer": answer,
+                "used_sources": [],
+                "agent_action": "check_odoo_connection",
+                "odoo_connected": connected,
+            }
+        )
+
     all_pages: List[dict] = []
 
     with tempfile.TemporaryDirectory() as tmpdir:
