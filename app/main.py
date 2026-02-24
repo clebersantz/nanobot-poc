@@ -23,6 +23,7 @@ DEFAULT_ODOO_WORKFLOW_PATH = os.path.join(
 )
 ODOO_WORKFLOW_PATH = os.getenv("ODOO_WORKFLOW_PATH", DEFAULT_ODOO_WORKFLOW_PATH)
 ODOO_WORKFLOW_AI_MODEL = os.getenv("ODOO_WORKFLOW_AI_MODEL", "gpt-4o-mini")
+ODOO_WORKFLOW_MAX_SECTIONS = 2
 
 app = FastAPI(title="Nanobot POC", description="Chat + OCR de PDFs via OpenAI")
 
@@ -202,12 +203,15 @@ def _build_workflow_context(workflow: str, stage_name: str) -> str:
     sections = [section.strip() for section in workflow.split("\n\n") if section.strip()]
     if len(sections) <= 1:
         return workflow
-    candidates = [{"page": index, "text": section} for index, section in enumerate(sections, start=1)]
+    candidates = [
+        {"section_id": index, "text": section}
+        for index, section in enumerate(sections, start=1)
+    ]
     try:
         top_sections = _retrieve_top_k(
             f"CRM Lead stage {stage_name}",
             candidates,
-            min(2, len(candidates)),
+            min(ODOO_WORKFLOW_MAX_SECTIONS, len(candidates)),
         )
     except Exception:
         return workflow
