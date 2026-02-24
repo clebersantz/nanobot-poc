@@ -181,7 +181,7 @@ def _retrieve_top_k(query: str, pages: List[dict], k: int) -> List[dict]:
 
 
 def _chunk_knowledge_text(content: str, source: str) -> List[dict]:
-    """Split content on blank lines, filtering out any resulting empty chunks.
+    """Split content on blank lines, returning only non-empty chunks.
 
     Args:
         content: Raw markdown content.
@@ -251,7 +251,9 @@ def _load_odoo_knowledge_sections() -> List[dict]:
 
 
 def _build_workflow_context(sections: List[dict], stage_name: str) -> str:
-    """Retrieve top-k sections by semantic similarity, falling back to all on error.
+    """Retrieve top-k sections by semantic similarity, falling back if retrieval fails.
+
+    Falls back to all sections if embedding or ranking errors occur.
 
     Args:
         sections: Knowledge sections with text to rank.
