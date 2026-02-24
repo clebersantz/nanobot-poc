@@ -22,6 +22,7 @@ DEFAULT_ODOO_WORKFLOW_PATH = os.path.join(
     "crm_lead.md",
 )
 ODOO_WORKFLOW_PATH = os.getenv("ODOO_WORKFLOW_PATH", DEFAULT_ODOO_WORKFLOW_PATH)
+ODOO_WORKFLOW_AI_MODEL = os.getenv("ODOO_WORKFLOW_AI_MODEL", "gpt-4o-mini")
 
 app = FastAPI(title="Nanobot POC", description="Chat + OCR de PDFs via OpenAI")
 
@@ -207,7 +208,7 @@ def _resolve_odoo_workflow_action(workflow: str, stage_name: str) -> Optional[di
     user_prompt = f"Workflow:\n{workflow}\n\nCurrent stage: {stage_name}\n"
     try:
         completion = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=ODOO_WORKFLOW_AI_MODEL,
             temperature=0,
             response_format={"type": "json_object"},
             messages=[
@@ -229,9 +230,9 @@ def _resolve_odoo_workflow_action(workflow: str, stage_name: str) -> Optional[di
     if message is None and next_stage is None:
         return None
     if message is not None and (not isinstance(message, str) or not message):
-        raise HTTPException(status_code=502, detail="Resposta incompleta do agente de workflow.")
+        raise HTTPException(status_code=502, detail="Campo message inválido no workflow.")
     if next_stage is not None and (not isinstance(next_stage, str) or not next_stage):
-        raise HTTPException(status_code=502, detail="Resposta incompleta do agente de workflow.")
+        raise HTTPException(status_code=502, detail="Campo next_stage inválido no workflow.")
     return {"message": message, "next_stage": next_stage}
 
 
@@ -398,8 +399,8 @@ def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
             {"status": "ignored", "lead_id": payload.lead_id, "current_stage": stage_name}
         )
 
-    message = action["message"]
-    next_stage_name = action["next_stage"]
+    message = action.get("message")
+    next_stage_name = action.get("next_stage")
     if message:
         try:
             models.execute_kw(
