@@ -201,6 +201,7 @@ def _load_odoo_workflow() -> dict:
         line = raw_line.strip()
         if not line:
             continue
+        # Skip markdown headers/preamble in the workflow file.
         if line.startswith("#"):
             continue
         case_match = ODOO_CASE_PATTERN.match(line)
