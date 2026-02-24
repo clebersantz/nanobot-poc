@@ -3,7 +3,7 @@ import math
 import os
 import tempfile
 import xmlrpc.client
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import pytesseract
 from pdf2image import convert_from_path
@@ -14,7 +14,12 @@ from pydantic import BaseModel
 
 MAX_PAGES_PER_PDF = int(os.getenv("MAX_PAGES_PER_PDF", "5"))
 TOP_K_PAGES = int(os.getenv("TOP_K_PAGES", "3"))
-ODOO_WORKFLOW_PATH = os.path.join(os.path.dirname(__file__), "knowledge", "odoo_crm_lead_workflow.json")
+DEFAULT_ODOO_WORKFLOW_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "knowledge",
+    "odoo_crm_lead_workflow.json",
+)
+ODOO_WORKFLOW_PATH = os.getenv("ODOO_WORKFLOW_PATH", DEFAULT_ODOO_WORKFLOW_PATH)
 
 app = FastAPI(title="Nanobot POC", description="Chat + OCR de PDFs via OpenAI")
 
@@ -178,9 +183,15 @@ def _load_odoo_workflow() -> dict:
         with open(ODOO_WORKFLOW_PATH, "r", encoding="utf-8") as handle:
             return json.load(handle)
     except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="Arquivo de conhecimento do workflow do Odoo não encontrado.")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Arquivo de conhecimento do workflow do Odoo não encontrado: {ODOO_WORKFLOW_PATH}",
+        )
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=500, detail=f"Arquivo de conhecimento do workflow do Odoo inválido: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Arquivo de conhecimento do workflow do Odoo inválido: {ODOO_WORKFLOW_PATH} ({exc})",
+        )
 
 
 def _get_odoo_connection():
@@ -207,7 +218,7 @@ def _get_lead_stage(
     uid: int,
     api_key: str,
     lead_id: int,
-) -> Optional[tuple[int, str]]:
+) -> Optional[Tuple[int, str]]:
     leads = models.execute_kw(db, uid, api_key, "crm.lead", "read", [[lead_id], ["stage_id"]])
     if not leads:
         return None
@@ -328,7 +339,7 @@ async def ocr(
 # ---------------------------------------------------------------------------
 
 @app.post("/v1/nanobot-poc/odoo/webhook/crm/lead", summary="Webhook ODOO CRM Lead")
-async def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
+def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
     workflow = _load_odoo_workflow()
     initial_stage = workflow.get("initial_stage")
     in_process_stage = workflow.get("in_process_stage")
@@ -339,8 +350,8 @@ async def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
     models, db, uid, api_key = _get_odoo_connection()
     try:
         lead_stage = _get_lead_stage(models, db, uid, api_key, payload.lead_id)
-    except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError) as exc:
-        raise HTTPException(status_code=502, detail=f"Erro ao consultar lead no ODOO: {exc}")
+    except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
+        raise HTTPException(status_code=502, detail="Erro ao consultar lead no ODOO.")
 
     if not lead_stage:
         raise HTTPException(status_code=404, detail="Lead não encontrado no ODOO.")
@@ -352,6 +363,16 @@ async def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
         )
 
     try:
+        next_stage_id = _get_stage_id(models, db, uid, api_key, in_process_stage)
+    except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
+        raise HTTPException(status_code=502, detail="Erro ao buscar estágio no ODOO.")
+    if not next_stage_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Stage '{in_process_stage}' não encontrado no ODOO.",
+        )
+
+    try:
         models.execute_kw(
             db,
             uid,
@@ -360,12 +381,10 @@ async def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
             "message_post",
             [[payload.lead_id], {"body": message}],
         )
-        next_stage_id = _get_stage_id(models, db, uid, api_key, in_process_stage)
-        if not next_stage_id:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Stage '{in_process_stage}' não encontrado no ODOO.",
-            )
+    except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
+        raise HTTPException(status_code=502, detail="Erro ao registrar mensagem no ODOO.")
+
+    try:
         models.execute_kw(
             db,
             uid,
@@ -374,8 +393,8 @@ async def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
             "write",
             [[payload.lead_id], {"stage_id": next_stage_id}],
         )
-    except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError) as exc:
-        raise HTTPException(status_code=502, detail=f"Erro ao atualizar lead no ODOO: {exc}")
+    except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
+        raise HTTPException(status_code=502, detail="Erro ao atualizar estágio do lead no ODOO.")
 
     return JSONResponse(
         {

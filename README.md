@@ -88,3 +88,4 @@ docker compose up --build
 | `ODOO_DB` | *(obrigatório para ODOO)* | Nome do banco de dados do ODOO |
 | `ODOO_USER` | *(obrigatório para ODOO)* | Usuário do ODOO |
 | `ODOO_API_KEY` | *(obrigatório para ODOO)* | API Key do usuário ODOO para XML-RPC |
+| `ODOO_WORKFLOW_PATH` | `app/knowledge/odoo_crm_lead_workflow.json` | Caminho do arquivo de conhecimento do workflow ODOO |
