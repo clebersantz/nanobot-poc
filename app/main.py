@@ -1,16 +1,30 @@
+import json
 import os
 import math
 import tempfile
-from typing import List
+import xmlrpc.client
+from pathlib import Path
+from typing import Any, List
 
 import pytesseract
 from pdf2image import convert_from_path
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from openai import OpenAI
+from pydantic import BaseModel
 
 MAX_PAGES_PER_PDF = int(os.getenv("MAX_PAGES_PER_PDF", "5"))
 TOP_K_PAGES = int(os.getenv("TOP_K_PAGES", "3"))
+
+# ---------------------------------------------------------------------------
+# Odoo configuration (read from environment)
+# ---------------------------------------------------------------------------
+ODOO_URL = os.getenv("ODOO_URL", "")
+ODOO_DB = os.getenv("ODOO_DB", "")
+ODOO_USER = os.getenv("ODOO_USER", "")
+ODOO_PASSWORD = os.getenv("ODOO_PASSWORD", "")
+
+_KNOWLEDGE_FILE = Path(__file__).parent / "knowledge" / "odoo_crm.md"
 
 app = FastAPI(title="Nanobot POC", description="Chat + OCR de PDFs via OpenAI")
 
@@ -250,3 +264,239 @@ async def ocr(
                 raise HTTPException(status_code=422, detail=f"Erro ao processar '{upload.filename}': {exc}")
             result[upload.filename] = pages
     return JSONResponse(result)
+
+
+# ---------------------------------------------------------------------------
+# Odoo XML-RPC helpers
+# ---------------------------------------------------------------------------
+
+def _odoo_uid() -> int:
+    """Authenticate against Odoo and return the user ID (uid)."""
+    if not all([ODOO_URL, ODOO_DB, ODOO_USER, ODOO_PASSWORD]):
+        raise HTTPException(
+            status_code=503,
+            detail="Odoo not configured. Set ODOO_URL, ODOO_DB, ODOO_USER, ODOO_PASSWORD.",
+        )
+    common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
+    uid = common.authenticate(ODOO_DB, ODOO_USER, ODOO_PASSWORD, {})
+    if not uid:
+        raise HTTPException(status_code=401, detail="Odoo authentication failed.")
+    return int(uid)
+
+
+def _odoo_models():
+    """Return an authenticated XML-RPC proxy for the Odoo object endpoint."""
+    return xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
+
+
+def _odoo_search_read(model: str, domain: list, fields: list) -> list:
+    uid = _odoo_uid()
+    models = _odoo_models()
+    return models.execute_kw(
+        ODOO_DB, uid, ODOO_PASSWORD,
+        model, "search_read",
+        [domain],
+        {"fields": fields},
+    )
+
+
+def _odoo_write(model: str, ids: list, values: dict) -> bool:
+    uid = _odoo_uid()
+    models = _odoo_models()
+    return models.execute_kw(
+        ODOO_DB, uid, ODOO_PASSWORD,
+        model, "write",
+        [ids, values],
+    )
+
+
+def _odoo_message_post(model: str, record_id: int, body: str) -> int:
+    uid = _odoo_uid()
+    models = _odoo_models()
+    return models.execute_kw(
+        ODOO_DB, uid, ODOO_PASSWORD,
+        model, "message_post",
+        [[record_id]],
+        {"body": body},
+    )
+
+
+# ---------------------------------------------------------------------------
+# OpenAI tool definitions for Odoo
+# ---------------------------------------------------------------------------
+
+_ODOO_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "odoo_search_read",
+            "description": (
+                "Search and read records from an Odoo model using domain filters."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": "Odoo model technical name, e.g. 'crm.lead' or 'crm.stage'.",
+                    },
+                    "domain": {
+                        "type": "array",
+                        "description": "Odoo domain filter list, e.g. [[\"id\",\"=\",42]].",
+                        "items": {},
+                    },
+                    "fields": {
+                        "type": "array",
+                        "description": "List of field names to return.",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["model", "domain", "fields"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "odoo_write",
+            "description": "Update field values on one or more existing Odoo records.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": "Odoo model technical name, e.g. 'crm.lead'.",
+                    },
+                    "ids": {
+                        "type": "array",
+                        "description": "List of record IDs to update.",
+                        "items": {"type": "integer"},
+                    },
+                    "values": {
+                        "type": "object",
+                        "description": "Dict of field names to new values.",
+                    },
+                },
+                "required": ["model", "ids", "values"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "odoo_message_post",
+            "description": "Post a message in the chatter of an Odoo record.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": "Odoo model technical name, e.g. 'crm.lead'.",
+                    },
+                    "record_id": {
+                        "type": "integer",
+                        "description": "ID of the record to post the message on.",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Message body (plain text or HTML).",
+                    },
+                },
+                "required": ["model", "record_id", "body"],
+            },
+        },
+    },
+]
+
+
+def _dispatch_tool(name: str, arguments: dict) -> Any:
+    """Execute an Odoo tool call and return a JSON-serialisable result."""
+    if name == "odoo_search_read":
+        return _odoo_search_read(
+            arguments["model"],
+            arguments["domain"],
+            arguments["fields"],
+        )
+    if name == "odoo_write":
+        return _odoo_write(
+            arguments["model"],
+            arguments["ids"],
+            arguments["values"],
+        )
+    if name == "odoo_message_post":
+        return _odoo_message_post(
+            arguments["model"],
+            arguments["record_id"],
+            arguments["body"],
+        )
+    raise ValueError(f"Unknown tool: {name}")
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/webhook/odoo
+# ---------------------------------------------------------------------------
+
+class OdooWebhookPayload(BaseModel):
+    lead_id: int
+
+
+@app.post("/v1/webhook/odoo", summary="Webhook: process an Odoo CRM lead")
+async def odoo_webhook(payload: OdooWebhookPayload):
+    """Receive a lead ID and autonomously process it using the Odoo CRM knowledge."""
+    try:
+        knowledge = _KNOWLEDGE_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Odoo CRM knowledge file not found.")
+
+    system_prompt = (
+        "You are Nanobot, an autonomous CRM agent.\n\n"
+        "## Knowledge\n\n"
+        f"{knowledge}\n\n"
+        "Use the provided tools to act on Odoo. "
+        "After completing all steps, reply with a short summary of what you did."
+    )
+    user_message = f"Process lead ID: {payload.lead_id}"
+
+    messages: list = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message},
+    ]
+
+    # Agentic loop: let OpenAI call tools until it produces a final answer.
+    max_iterations = 10
+    for _ in range(max_iterations):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                temperature=0,
+                tools=_ODOO_TOOLS,
+                tool_choice="auto",
+                messages=messages,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"OpenAI API error: {exc}")
+
+        choice = response.choices[0]
+        messages.append(choice.message)
+
+        if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+            for tc in choice.message.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                    result = _dispatch_tool(tc.function.name, args)
+                    tool_result = json.dumps(result)
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    tool_result = json.dumps({"error": str(exc)})
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": tool_result,
+                })
+        else:
+            # Model produced a final text answer — we're done.
+            summary = choice.message.content or "Done."
+            return JSONResponse({"lead_id": payload.lead_id, "summary": summary})
+
+    raise HTTPException(status_code=500, detail="Agent did not converge after max iterations.")
