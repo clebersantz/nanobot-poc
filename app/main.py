@@ -1,6 +1,6 @@
-import json
 import math
 import os
+import re
 import tempfile
 import xmlrpc.client
 from typing import List, Optional, Tuple
@@ -14,10 +14,12 @@ from pydantic import BaseModel
 
 MAX_PAGES_PER_PDF = int(os.getenv("MAX_PAGES_PER_PDF", "5"))
 TOP_K_PAGES = int(os.getenv("TOP_K_PAGES", "3"))
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DEFAULT_ODOO_WORKFLOW_PATH = os.path.join(
-    os.path.dirname(__file__),
-    "knowledge",
-    "odoo_crm_lead_workflow.json",
+    BASE_DIR,
+    "docs",
+    "workflow",
+    "crm_lead.md",
 )
 ODOO_WORKFLOW_PATH = os.getenv("ODOO_WORKFLOW_PATH", DEFAULT_ODOO_WORKFLOW_PATH)
 
@@ -181,17 +183,56 @@ def _retrieve_top_k(query: str, pages: List[dict], k: int) -> List[dict]:
 def _load_odoo_workflow() -> dict:
     try:
         with open(ODOO_WORKFLOW_PATH, "r", encoding="utf-8") as handle:
-            return json.load(handle)
+            content = handle.read()
     except FileNotFoundError:
         raise HTTPException(
             status_code=500,
             detail=f"Arquivo de conhecimento do workflow do Odoo não encontrado: {ODOO_WORKFLOW_PATH}",
         )
-    except json.JSONDecodeError as exc:
+
+    workflow: dict = {}
+    current_stage: Optional[str] = None
+    case_pattern = re.compile(r"Case CRM Lead stage is\s+(.+):", re.IGNORECASE)
+    note_pattern = re.compile(r'Add a Lead note\s+"(.+)"', re.IGNORECASE)
+    move_pattern = re.compile(r"Move Lead to stage\s+(.+)", re.IGNORECASE)
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        case_match = case_pattern.match(line)
+        if case_match:
+            current_stage = case_match.group(1).strip()
+            workflow[current_stage] = {"message": None, "next_stage": None}
+            continue
+        if not current_stage:
+            continue
+        note_match = note_pattern.match(line)
+        if note_match:
+            workflow[current_stage]["message"] = note_match.group(1).strip()
+            continue
+        move_match = move_pattern.match(line)
+        if move_match:
+            workflow[current_stage]["next_stage"] = move_match.group(1).strip().rstrip(".")
+
+    if not workflow:
         raise HTTPException(
             status_code=500,
-            detail=f"Arquivo de conhecimento do workflow do Odoo inválido: {ODOO_WORKFLOW_PATH} ({exc})",
+            detail=f"Arquivo de conhecimento do workflow do Odoo inválido: {ODOO_WORKFLOW_PATH}",
         )
+    missing = [
+        stage
+        for stage, data in workflow.items()
+        if not data.get("message") or not data.get("next_stage")
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Arquivo de conhecimento do workflow do Odoo incompleto para estágios: "
+                + ", ".join(sorted(missing))
+            ),
+        )
+    return workflow
 
 
 def _get_odoo_connection():
@@ -341,12 +382,6 @@ async def ocr(
 @app.post("/v1/nanobot-poc/odoo/webhook/crm/lead", summary="Webhook ODOO CRM Lead")
 def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
     workflow = _load_odoo_workflow()
-    initial_stage = workflow.get("initial_stage")
-    in_process_stage = workflow.get("in_process_stage")
-    message = workflow.get("message")
-    if not initial_stage or not in_process_stage or not message:
-        raise HTTPException(status_code=500, detail="Arquivo de conhecimento do workflow do Odoo incompleto.")
-
     models, db, uid, api_key = _get_odoo_connection()
     try:
         lead_stage = _get_lead_stage(models, db, uid, api_key, payload.lead_id)
@@ -357,19 +392,21 @@ def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
         raise HTTPException(status_code=404, detail="Lead não encontrado no ODOO.")
 
     _, stage_name = lead_stage
-    if stage_name != initial_stage:
+    stage_rules = workflow.get(stage_name)
+    if not stage_rules:
         return JSONResponse(
             {"status": "ignored", "lead_id": payload.lead_id, "current_stage": stage_name}
         )
 
+    next_stage_name = stage_rules["next_stage"]
     try:
-        next_stage_id = _get_stage_id(models, db, uid, api_key, in_process_stage)
+        next_stage_id = _get_stage_id(models, db, uid, api_key, next_stage_name)
     except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
         raise HTTPException(status_code=502, detail="Erro ao buscar estágio no ODOO.")
     if not next_stage_id:
         raise HTTPException(
             status_code=404,
-            detail=f"Stage '{in_process_stage}' não encontrado no ODOO.",
+            detail=f"Stage '{next_stage_name}' não encontrado no ODOO.",
         )
 
     try:
@@ -379,7 +416,7 @@ def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
             api_key,
             "crm.lead",
             "message_post",
-            [[payload.lead_id], {"body": message}],
+            [[payload.lead_id], {"body": stage_rules["message"]}],
         )
     except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
         raise HTTPException(status_code=502, detail="Erro ao registrar mensagem no ODOO.")
@@ -401,6 +438,6 @@ def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
             "status": "processed",
             "lead_id": payload.lead_id,
             "from_stage": stage_name,
-            "to_stage": in_process_stage,
+            "to_stage": next_stage_name,
         }
     )

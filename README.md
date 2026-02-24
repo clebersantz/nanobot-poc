@@ -16,7 +16,7 @@ POC simples estilo "nanobot" em FastAPI com Docker para **chat** e **OCR de PDFs
 
 ---
 
-Workflow ODOO CRM configurado em `app/knowledge/odoo_crm_lead_workflow.json`.
+Workflow ODOO CRM configurado em `docs/workflow/crm_lead.md`.
 
 ## Pré-requisitos
 
@@ -88,4 +88,4 @@ docker compose up --build
 | `ODOO_DB` | *(obrigatório para ODOO)* | Nome do banco de dados do ODOO |
 | `ODOO_USER` | *(obrigatório para ODOO)* | Usuário do ODOO |
 | `ODOO_API_KEY` | *(obrigatório para ODOO)* | API Key do usuário ODOO para XML-RPC |
-| `ODOO_WORKFLOW_PATH` | `app/knowledge/odoo_crm_lead_workflow.json` | Caminho do arquivo de conhecimento do workflow ODOO |
+| `ODOO_WORKFLOW_PATH` | `docs/workflow/crm_lead.md` | Caminho do arquivo de conhecimento do workflow ODOO |
