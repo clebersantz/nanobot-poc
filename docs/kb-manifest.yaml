@@ -1,0 +1,90 @@
+# Knowledge Base Manifest
+
+# This file describes the docs/kb/ knowledge base collections for indexing
+# by nanobot.ai. Adjust paths, chunk settings, and top_k to suit your agent.
+
+version: "1.0"
+
+defaults:
+  chunk_size: 512        # tokens per chunk
+  chunk_overlap: 64      # token overlap between consecutive chunks
+  top_k: 5               # number of chunks retrieved per query
+
+collections:
+
+  - id: kb-meta
+    name: "KB Meta – Glossary & Agent Rules"
+    description: >
+      Foundational reference: glossary of terms and behavioural rules
+      for AI agents working with this knowledge base.
+    include:
+      - "docs/kb/00-meta/**/*.md"
+    chunk_size: 512
+    chunk_overlap: 64
+    top_k: 3
+
+  - id: kb-odoo-connection
+    name: "Odoo 18 – XML-RPC Connection"
+    description: >
+      How to authenticate and establish an XML-RPC session to Odoo 18.
+    include:
+      - "docs/kb/20-odoo/01-connection/**/*.md"
+    chunk_size: 512
+    chunk_overlap: 64
+    top_k: 3
+
+  - id: kb-odoo-models
+    name: "Odoo 18 – CRM Models"
+    description: >
+      Reference documentation for crm.lead, mail.activity, res.partner,
+      and res.users models — fields, relationships, and usage patterns.
+    include:
+      - "docs/kb/20-odoo/02-models/**/*.md"
+    chunk_size: 512
+    chunk_overlap: 64
+    top_k: 5
+
+  - id: kb-odoo-fields
+    name: "Odoo 18 – CRM Field Reference"
+    description: >
+      Detailed field listings for crm.lead, including standard and custom
+      (x_*) fields, types, and how to discover instance-specific fields.
+    include:
+      - "docs/kb/20-odoo/03-fields/**/*.md"
+    chunk_size: 512
+    chunk_overlap: 64
+    top_k: 5
+
+  - id: kb-odoo-processes
+    name: "Odoo 18 – CRM Processes"
+    description: >
+      Step-by-step XML-RPC procedures for creating leads, updating fields,
+      changing pipeline stage, assigning owners, scheduling activities,
+      and converting leads to opportunities.
+    include:
+      - "docs/kb/20-odoo/04-processes/**/*.md"
+    chunk_size: 512
+    chunk_overlap: 64
+    top_k: 5
+
+  - id: kb-odoo-runbooks
+    name: "Odoo 18 – CRM Runbooks"
+    description: >
+      Operational runbooks for common CRM maintenance tasks:
+      deduplication by email and merge policy.
+    include:
+      - "docs/kb/20-odoo/05-runbooks/**/*.md"
+    chunk_size: 512
+    chunk_overlap: 64
+    top_k: 5
+
+  - id: kb-odoo-errors
+    name: "Odoo 18 – XML-RPC Error Reference"
+    description: >
+      Common XML-RPC errors, their causes, and fixes for Odoo 18 CRM
+      integrations.
+    include:
+      - "docs/kb/20-odoo/06-errors/**/*.md"
+    chunk_size: 512
+    chunk_overlap: 64
+    top_k: 3
