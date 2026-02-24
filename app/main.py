@@ -181,7 +181,15 @@ def _retrieve_top_k(query: str, pages: List[dict], k: int) -> List[dict]:
 
 
 def _chunk_knowledge_text(content: str, source: str) -> List[dict]:
-    """Split content on blank lines into chunks with section_id 'source#index' and [source] text."""
+    """Split content on blank lines into chunks.
+
+    Args:
+        content: Raw markdown content.
+        source: Source identifier used in section_id and text prefix.
+
+    Returns:
+        List of dicts with keys section_id ('source#index') and text (prefixed with [source]).
+    """
     chunks = [chunk.strip() for chunk in content.split("\n\n") if chunk.strip()]
     return [
         {"section_id": f"{source}#{index}", "text": f"[{source}]\n{chunk}"}
@@ -195,6 +203,9 @@ def _load_odoo_knowledge_sections() -> List[dict]:
     When a directory is provided, all .md files are loaded recursively. When a file is
     provided, it is loaded directly. Returns dicts with section_id 'source#index' and
     text prefixed by [source].
+
+    Returns:
+        List of dicts with keys section_id ('source#index') and text (prefixed with [source]).
     """
     if os.path.isdir(ODOO_WORKFLOW_PATH):
         md_files = []
@@ -240,7 +251,15 @@ def _load_odoo_knowledge_sections() -> List[dict]:
 
 
 def _build_workflow_context(sections: List[dict], stage_name: str) -> str:
-    """Retrieve top-k sections by semantic similarity, falling back to all on error."""
+    """Retrieve top-k sections by semantic similarity, falling back to all on error.
+
+    Args:
+        sections: Knowledge sections with text to rank.
+        stage_name: Current CRM Lead stage.
+
+    Returns:
+        Knowledge context string for the AI agent.
+    """
     try:
         top_sections = _retrieve_top_k(
             f"CRM Lead stage {stage_name}",
@@ -255,7 +274,15 @@ def _build_workflow_context(sections: List[dict], stage_name: str) -> str:
 
 
 def _resolve_odoo_workflow_action(sections: List[dict], stage_name: str) -> Optional[dict]:
-    """Use the AI model to map stage + knowledge into message/next_stage or None."""
+    """Use the AI model to map stage + knowledge into message/next_stage or None.
+
+    Args:
+        sections: Knowledge sections used as context.
+        stage_name: Current CRM Lead stage.
+
+    Returns:
+        Dict with message and next_stage keys, or None when no action applies.
+    """
     system_prompt = (
         "You are a CRM Lead AI Agent. Use only the knowledge base snippets provided. "
         "Given the current CRM Lead stage, decide the next action based on the knowledge base. "
