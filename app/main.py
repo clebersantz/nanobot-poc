@@ -23,9 +23,10 @@ DEFAULT_ODOO_WORKFLOW_PATH = os.path.join(
 )
 ODOO_WORKFLOW_PATH = os.getenv("ODOO_WORKFLOW_PATH", DEFAULT_ODOO_WORKFLOW_PATH)
 # Regex patterns are module-level to avoid recompilation on each webhook call.
+# Workflow parsing expects the exact English phrases defined in docs/workflow/crm_lead.md.
 ODOO_CASE_PATTERN = re.compile(r"Case CRM Lead stage is\s+(.+):", re.IGNORECASE)
 ODOO_NOTE_PATTERN = re.compile(r'Add a Lead note\s+"(.+)"', re.IGNORECASE)
-ODOO_MOVE_PATTERN = re.compile(r"Move Lead to stage\s+(.+)\.$", re.IGNORECASE)
+ODOO_MOVE_PATTERN = re.compile(r"Move Lead to stage\s+(.+?)\.$", re.IGNORECASE)
 
 app = FastAPI(title="Nanobot POC", description="Chat + OCR de PDFs via OpenAI")
 
