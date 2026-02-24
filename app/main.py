@@ -185,10 +185,11 @@ def _chunk_knowledge_text(content: str, source: str) -> List[dict]:
 
     Args:
         content: Raw markdown content.
-        source: Relative path or identifier used in section_id and text prefix.
+        source: Relative path from ODOO_WORKFLOW_PATH used in section_id and text prefix.
 
     Returns:
-        List of dicts with keys section_id ('source#index') and text (prefixed with [source]).
+        List of dicts with keys section_id ('source#index') and text prefixed with
+        [source] where source is the relative file path.
     """
     chunks = [chunk.strip() for chunk in content.split("\n\n") if chunk.strip()]
     return [
@@ -205,7 +206,8 @@ def _load_odoo_knowledge_sections() -> List[dict]:
     text prefixed by [source].
 
     Returns:
-        List of dicts with keys section_id ('source#index') and text (prefixed with [source]).
+        List of dicts with keys section_id ('source#index') and text prefixed with
+        [source] where source is the relative file path.
     """
     if os.path.isdir(ODOO_WORKFLOW_PATH):
         md_files = []
