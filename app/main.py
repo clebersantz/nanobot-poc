@@ -228,7 +228,9 @@ def _resolve_odoo_workflow_action(workflow: str, stage_name: str) -> Optional[di
     next_stage = payload.get("next_stage")
     if message is None and next_stage is None:
         return None
-    if not isinstance(message, str) or not isinstance(next_stage, str) or not message or not next_stage:
+    if message is not None and (not isinstance(message, str) or not message):
+        raise HTTPException(status_code=502, detail="Resposta incompleta do agente de workflow.")
+    if next_stage is not None and (not isinstance(next_stage, str) or not next_stage):
         raise HTTPException(status_code=502, detail="Resposta incompleta do agente de workflow.")
     return {"message": message, "next_stage": next_stage}
 
@@ -396,40 +398,43 @@ def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
             {"status": "ignored", "lead_id": payload.lead_id, "current_stage": stage_name}
         )
 
+    message = action["message"]
     next_stage_name = action["next_stage"]
-    try:
-        next_stage_id = _get_stage_id(models, db, uid, api_key, next_stage_name)
-    except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
-        raise HTTPException(status_code=502, detail="Erro ao buscar estágio no ODOO.")
-    if not next_stage_id:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Stage '{next_stage_name}' não encontrado no ODOO.",
-        )
+    if message:
+        try:
+            models.execute_kw(
+                db,
+                uid,
+                api_key,
+                "crm.lead",
+                "message_post",
+                [[payload.lead_id], {"body": message}],
+            )
+        except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
+            raise HTTPException(status_code=502, detail="Erro ao registrar mensagem no ODOO.")
 
-    try:
-        models.execute_kw(
-            db,
-            uid,
-            api_key,
-            "crm.lead",
-            "message_post",
-            [[payload.lead_id], {"body": action["message"]}],
-        )
-    except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
-        raise HTTPException(status_code=502, detail="Erro ao registrar mensagem no ODOO.")
+    if next_stage_name:
+        try:
+            next_stage_id = _get_stage_id(models, db, uid, api_key, next_stage_name)
+        except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
+            raise HTTPException(status_code=502, detail="Erro ao buscar estágio no ODOO.")
+        if not next_stage_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Stage '{next_stage_name}' não encontrado no ODOO.",
+            )
 
-    try:
-        models.execute_kw(
-            db,
-            uid,
-            api_key,
-            "crm.lead",
-            "write",
-            [[payload.lead_id], {"stage_id": next_stage_id}],
-        )
-    except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
-        raise HTTPException(status_code=502, detail="Erro ao atualizar estágio do lead no ODOO.")
+        try:
+            models.execute_kw(
+                db,
+                uid,
+                api_key,
+                "crm.lead",
+                "write",
+                [[payload.lead_id], {"stage_id": next_stage_id}],
+            )
+        except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
+            raise HTTPException(status_code=502, detail="Erro ao atualizar estágio do lead no ODOO.")
 
     return JSONResponse(
         {
