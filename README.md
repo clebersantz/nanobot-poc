@@ -46,6 +46,7 @@ echo "OPENAI_API_KEY=sk-..." > .env
 Variáveis opcionais (com defaults):
 
 ```
+ODOO_URL / ODOO_DB / ODOO_USER / ODOO_API_KEY 	"" 	ODOO XML-RPC auth
 MAX_PAGES_PER_PDF=5   # Máximo de páginas processadas por PDF
 TOP_K_PAGES=3         # Quantas páginas mais relevantes enviar ao LLM
 ```
