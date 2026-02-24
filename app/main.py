@@ -185,7 +185,7 @@ def _chunk_knowledge_text(content: str, source: str) -> List[dict]:
 
     Args:
         content: Raw markdown content.
-        source: Source identifier used in section_id and text prefix.
+        source: Relative path or identifier used in section_id and text prefix.
 
     Returns:
         List of dicts with keys section_id ('source#index') and text (prefixed with [source]).
