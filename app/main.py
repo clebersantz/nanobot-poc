@@ -203,7 +203,7 @@ def _resolve_odoo_workflow_action(workflow: str, stage_name: str) -> Optional[di
         "You are a CRM Lead AI Agent. Use only the workflow text provided. "
         "Given the current CRM Lead stage, decide the next action. "
         "Respond with JSON only: {\"message\": string|null, \"next_stage\": string|null}. "
-        "If no action applies, use null for both fields."
+        "Use null instead of empty strings. If no action applies, use null for both fields."
     )
     user_prompt = f"Workflow:\n{workflow}\n\nCurrent stage: {stage_name}\n"
     try:
@@ -216,8 +216,8 @@ def _resolve_odoo_workflow_action(workflow: str, stage_name: str) -> Optional[di
                 {"role": "user", "content": user_prompt},
             ],
         )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Erro na API OpenAI: {exc}")
+    except Exception:
+        raise HTTPException(status_code=502, detail="Erro ao comunicar com o serviço de workflow.")
 
     content = completion.choices[0].message.content or ""
     try:
