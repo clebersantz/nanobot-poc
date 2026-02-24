@@ -257,87 +257,166 @@ async def ocr(
 
 
 # ---------------------------------------------------------------------------
-# Odoo CRM endpoints
+# Odoo CRM endpoints — powered by the AI agent + knowledge base
 # ---------------------------------------------------------------------------
 
 # Maximum number of LLM ↔ tool-call turns in the agent loop
 _CRM_MAX_TURNS = int(os.getenv("CRM_AGENT_MAX_TURNS", "10"))
 
-# System prompt that gives the AI agent its CRM knowledge
+# Load the Odoo CRM knowledge file once at startup
+_CRM_KNOWLEDGE = odoo_crm.load_knowledge()
+
+# System prompt: identity + full knowledge base
 _CRM_SYSTEM_PROMPT = (
-    "You are Nanobot, an intelligent CRM assistant integrated with Odoo. "
-    "When you receive a CRM lead ID you must:\n"
-    "1. Inspect the lead's current stage using the get_lead_info tool.\n"
-    f"2. If the lead is in the INITIAL stage, post the message "
-    f"'{odoo_crm.NANOBOT_MESSAGE}' on the lead using the post_message_on_lead tool.\n"
-    "3. Then move the lead to the IN PROGRESS stage using the move_lead_to_stage tool.\n"
-    "4. If the lead is NOT in the INITIAL stage, explain why no action was taken.\n"
-    "Always use the available tools to inspect and update the lead — never assume its state."
+    "You are Nanobot, an intelligent CRM assistant integrated with Odoo.\n\n"
+    "Use the knowledge below to understand the Odoo CRM data model and API, "
+    "then use the available tools (`odoo_search`, `odoo_read`, `odoo_write`, `odoo_call`) "
+    "to complete the requested task.\n\n"
+    "## Odoo CRM Knowledge\n\n"
+    + _CRM_KNOWLEDGE
 )
 
-# OpenAI tool definitions for Odoo CRM operations
+# Generic low-level Odoo XML-RPC tools exposed to the AI agent
 _CRM_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "get_lead_info",
-            "description": "Retrieve details of an Odoo CRM lead including its current stage name.",
+            "name": "odoo_search",
+            "description": (
+                "Search Odoo records matching a domain filter and return a list of IDs. "
+                "Use this to find stage IDs (model='crm.stage') or lead IDs (model='crm.lead')."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "lead_id": {"type": "integer", "description": "The numeric ID of the CRM lead."},
+                    "model": {"type": "string", "description": "Odoo model name, e.g. 'crm.lead' or 'crm.stage'."},
+                    "domain": {
+                        "type": "array",
+                        "description": "Odoo domain filter list, e.g. [[\"name\",\"ilike\",\"INITIAL\"]].",
+                        "items": {},
+                    },
+                    "limit": {"type": "integer", "description": "Max records to return (default 100)."},
+                    "offset": {"type": "integer", "description": "Records to skip (default 0)."},
                 },
-                "required": ["lead_id"],
+                "required": ["model", "domain"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "list_crm_stages",
-            "description": "List all available CRM pipeline stages (id and name).",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "post_message_on_lead",
-            "description": "Post a chatter note message on an Odoo CRM lead.",
+            "name": "odoo_read",
+            "description": "Read specific fields from a list of Odoo record IDs.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "lead_id": {"type": "integer", "description": "The numeric ID of the CRM lead."},
-                    "message": {"type": "string", "description": "The message text to post."},
+                    "model": {"type": "string", "description": "Odoo model name."},
+                    "ids": {"type": "array", "items": {"type": "integer"}, "description": "List of record IDs."},
+                    "fields": {"type": "array", "items": {"type": "string"}, "description": "Field names to return."},
                 },
-                "required": ["lead_id", "message"],
+                "required": ["model", "ids", "fields"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "move_lead_to_stage",
-            "description": "Move an Odoo CRM lead to a different pipeline stage identified by stage name.",
+            "name": "odoo_write",
+            "description": "Update fields on a list of Odoo records.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "lead_id": {"type": "integer", "description": "The numeric ID of the CRM lead."},
-                    "stage_name": {"type": "string", "description": "The name of the target stage (e.g. 'IN PROGRESS')."},
+                    "model": {"type": "string", "description": "Odoo model name."},
+                    "ids": {"type": "array", "items": {"type": "integer"}, "description": "Record IDs to update."},
+                    "values": {"type": "object", "description": "Dict of field → value to write, e.g. {\"stage_id\": 7}."},
                 },
-                "required": ["lead_id", "stage_name"],
+                "required": ["model", "ids", "values"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "odoo_call",
+            "description": (
+                "Call any Odoo model method, e.g. 'message_post' to add a chatter note. "
+                "args[0] is usually a list of record IDs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "model": {"type": "string", "description": "Odoo model name."},
+                    "method": {"type": "string", "description": "Method name to invoke."},
+                    "args": {"type": "array", "description": "Positional arguments. First element is typically a list of IDs.", "items": {}},
+                    "kwargs": {"type": "object", "description": "Keyword arguments dict."},
+                },
+                "required": ["model", "method", "args", "kwargs"],
             },
         },
     },
 ]
 
-# Dispatch table mapping tool names to odoo_crm callables
+# Map tool names to odoo_crm callables
 _TOOL_DISPATCH = {
-    "get_lead_info": lambda args: odoo_crm.tool_get_lead_info(**args),
-    "list_crm_stages": lambda _args: odoo_crm.tool_list_crm_stages(),
-    "post_message_on_lead": lambda args: odoo_crm.tool_post_message_on_lead(**args),
-    "move_lead_to_stage": lambda args: odoo_crm.tool_move_lead_to_stage_by_name(**args),
+    "odoo_search": lambda a: odoo_crm.tool_odoo_search(**a),
+    "odoo_read":   lambda a: odoo_crm.tool_odoo_read(**a),
+    "odoo_write":  lambda a: odoo_crm.tool_odoo_write(**a),
+    "odoo_call":   lambda a: odoo_crm.tool_odoo_call(**a),
 }
+
+
+def _run_crm_agent(task: str) -> dict:
+    """Run the Nanobot CRM AI agent for the given *task* description.
+
+    Returns a dict with ``actions`` (list of tool calls + results) and
+    ``summary`` (final natural-language response from the agent).
+    """
+    messages: list = [
+        {"role": "system", "content": _CRM_SYSTEM_PROMPT},
+        {"role": "user", "content": task},
+    ]
+    actions_taken: list[dict] = []
+    final_summary = ""
+
+    for _ in range(_CRM_MAX_TURNS):
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.1,
+            messages=messages,
+            tools=_CRM_TOOLS,
+            tool_choice="auto",
+        )
+        msg = response.choices[0].message
+        messages.append(msg.model_dump(exclude_unset=True))
+
+        if not msg.tool_calls:
+            final_summary = msg.content or ""
+            break
+
+        for tc in msg.tool_calls:
+            tool_name = tc.function.name
+            args: dict = {}
+            try:
+                args = json.loads(tc.function.arguments)
+                tool_result = _TOOL_DISPATCH[tool_name](args)
+            except json.JSONDecodeError as exc:
+                tool_result = {"error": f"Invalid JSON arguments for {tool_name}: {tc.function.arguments!r} — {exc}"}
+            except KeyError:
+                tool_result = {"error": f"Unknown tool: {tool_name}"}
+            except Exception as exc:
+                tool_result = {"error": str(exc)}
+
+            actions_taken.append({"tool": tool_name, "args": args, "result": tool_result})
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": json.dumps(tool_result),
+            })
+
+    if not final_summary:
+        final_summary = f"Agent reached the maximum number of turns ({_CRM_MAX_TURNS}) without finishing."
+
+    return {"actions": actions_taken, "summary": final_summary}
 
 
 class CRMWebhookPayload(BaseModel):
@@ -348,52 +427,11 @@ class CRMWebhookPayload(BaseModel):
 async def crm_webhook(payload: CRMWebhookPayload):
     """Receive a Lead ID via webhook.
 
-    Nanobot uses its AI knowledge and the available Odoo CRM tools to inspect
-    the lead, post the processing message, and advance it to the IN PROGRESS stage.
+    Nanobot reads its knowledge base and uses generic Odoo tools to inspect
+    the lead, post the processing message, and advance it to IN PROGRESS.
     """
-    messages: list = [
-        {"role": "system", "content": _CRM_SYSTEM_PROMPT},
-        {"role": "user", "content": f"Process CRM lead ID {payload.lead_id}."},
-    ]
-    actions_taken: list[dict] = []
-    final_summary = ""
-
     try:
-        for _ in range(_CRM_MAX_TURNS):
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                temperature=0.1,
-                messages=messages,
-                tools=_CRM_TOOLS,
-                tool_choice="auto",
-            )
-            msg = response.choices[0].message
-            # Append the assistant message (must convert to dict for the next call)
-            messages.append(msg.model_dump(exclude_unset=True))
-
-            if not msg.tool_calls:
-                # The agent has finished; capture its final text response
-                final_summary = msg.content or ""
-                break
-
-            # Execute each tool call and feed results back to the agent
-            for tc in msg.tool_calls:
-                tool_name = tc.function.name
-                try:
-                    args = json.loads(tc.function.arguments)
-                    tool_result = _TOOL_DISPATCH[tool_name](args)
-                except KeyError:
-                    tool_result = {"error": f"Unknown tool: {tool_name}"}
-                except Exception as exc:
-                    tool_result = {"error": str(exc)}
-
-                actions_taken.append({"tool": tool_name, "args": args, "result": tool_result})
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": json.dumps(tool_result),
-                })
-
+        result = _run_crm_agent(f"Process CRM lead ID {payload.lead_id}.")
     except EnvironmentError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except PermissionError as exc:
@@ -401,27 +439,22 @@ async def crm_webhook(payload: CRMWebhookPayload):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Erro no agente Nanobot: {exc}")
 
-    if not final_summary:
-        final_summary = f"Agent reached the maximum number of turns ({_CRM_MAX_TURNS}) without finishing."
-
-    return JSONResponse({
-        "lead_id": payload.lead_id,
-        "actions": actions_taken,
-        "summary": final_summary,
-    })
+    return JSONResponse({"lead_id": payload.lead_id, **result})
 
 
-@app.post("/v1/crm/process-initial-leads", summary="Processa todos os leads em estágio INITIAL no Odoo CRM")
+@app.post("/v1/crm/process-initial-leads", summary="Nanobot processa todos os leads em estágio INITIAL no Odoo CRM")
 async def process_initial_leads():
-    """Fetch all leads in the INITIAL stage, post the Nanobot message and move them to IN PROGRESS."""
+    """Nanobot reads its knowledge base and processes every lead in the INITIAL stage."""
     try:
-        results = odoo_crm.process_all_initial_leads()
+        result = _run_crm_agent(
+            "Find all CRM leads currently in the INITIAL stage and process each one: "
+            "post 'Hello, processed by Nanobot' and move them to the IN PROGRESS stage."
+        )
     except EnvironmentError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except PermissionError as exc:
         raise HTTPException(status_code=401, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Erro ao processar leads no Odoo: {exc}")
-    return JSONResponse({"processed": results, "total": len(results)})
+        raise HTTPException(status_code=502, detail=f"Erro no agente Nanobot: {exc}")
+
+    return JSONResponse(result)

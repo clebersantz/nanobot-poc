@@ -98,25 +98,44 @@ docker compose up --build
 | `ODOO_DB` | *(obrigatório para CRM)* | Nome do banco de dados Odoo |
 | `ODOO_USERNAME` | *(obrigatório para CRM)* | Usuário de login Odoo |
 | `ODOO_PASSWORD` | *(obrigatório para CRM)* | Senha ou API key do Odoo |
-| `ODOO_INITIAL_STAGE` | `INITIAL` | Nome do estágio inicial do CRM |
-| `ODOO_IN_PROGRESS_STAGE` | `IN PROGRESS` | Nome do estágio "em andamento" do CRM |
 | `CRM_AGENT_MAX_TURNS` | `10` | Número máximo de rodadas do agente IA |
 
 ---
 
-## Integração Odoo CRM
+## Integração Odoo CRM — baseada em conhecimento (Knowledge-driven)
 
-O Nanobot usa um **agente de IA** (OpenAI tool-calling) para processar leads do Odoo CRM. Ao invés de executar passos fixos em código, o agente usa seu conhecimento para decidir quais ações executar.
+O Nanobot usa um **agente de IA** (OpenAI tool-calling) alimentado por uma **base de conhecimento** para interagir com o Odoo CRM. Não há lógica de negócio codificada — o agente aprende *o que fazer* a partir do arquivo de conhecimento e decide autonomamente quais chamadas de API realizar.
+
+### Arquitetura
+
+```
+Webhook / endpoint
+       │
+       ▼
+  Nanobot Agent (OpenAI gpt-4o-mini)
+       │  carrega
+       ├──► app/knowledge/odoo_crm.md   ← base de conhecimento
+       │
+       │  usa ferramentas genéricas
+       ├──► odoo_search  — busca registros por filtro (crm.lead, crm.stage …)
+       ├──► odoo_read    — lê campos de registros
+       ├──► odoo_write   — escreve campos em registros
+       └──► odoo_call    — chama qualquer método do modelo (ex: message_post)
+```
+
+O arquivo `app/knowledge/odoo_crm.md` ensina ao agente:
+- Como autenticar no Odoo (via variáveis de ambiente pré-configuradas)
+- Os modelos relevantes (`crm.lead`, `crm.stage`) e seus campos
+- Como buscar leads por estágio
+- Como postar mensagens no chatter
+- Como mover leads entre estágios
+- O fluxo padrão de processamento: INITIAL → mensagem → IN PROGRESS
 
 ### Como funciona o webhook (`POST /v1/crm/webhook`)
 
 1. O usuário move um lead para o estágio **INITIAL** no Odoo e o Odoo dispara o webhook.
-2. O Nanobot recebe `{"lead_id": 42}` e inicia um agente OpenAI com as seguintes ferramentas disponíveis:
-   - `get_lead_info` — busca detalhes do lead (nome, estágio atual, etc.)
-   - `list_crm_stages` — lista todos os estágios do pipeline
-   - `post_message_on_lead` — posta uma mensagem no chatter do lead
-   - `move_lead_to_stage` — move o lead para um novo estágio
-3. O agente **inspeciona o lead**, verifica o estágio, posta `"Hello, processed by Nanobot"` e move o lead para **IN PROGRESS** — tudo decidido pela IA usando seu conhecimento de CRM.
+2. O Nanobot recebe `{"lead_id": 42}` e inicia o agente com sua base de conhecimento.
+3. O agente usa `odoo_read` para inspecionar o lead, `odoo_call` para postar a mensagem e `odoo_write` para mover o estágio — **tudo decidido pela IA com base no conhecimento**.
 4. A resposta inclui as ações executadas e um resumo em linguagem natural.
 
 ### Exemplo de chamada ao webhook
@@ -132,11 +151,12 @@ Resposta:
 {
   "lead_id": 42,
   "actions": [
-    {"tool": "get_lead_info", "args": {"lead_id": 42}, "result": {"id": 42, "name": "Acme Corp", "stage_name": "INITIAL"}},
-    {"tool": "post_message_on_lead", "args": {"lead_id": 42, "message": "Hello, processed by Nanobot"}, "result": {"lead_id": 42, "message_posted": "Hello, processed by Nanobot"}},
-    {"tool": "move_lead_to_stage", "args": {"lead_id": 42, "stage_name": "IN PROGRESS"}, "result": {"lead_id": 42, "moved_to_stage": "IN PROGRESS"}}
+    {"tool": "odoo_read",  "args": {"model": "crm.lead", "ids": [42], "fields": ["id", "name", "stage_id"]}, "result": [{"id": 42, "name": "Acme Corp", "stage_id": [4, "INITIAL"]}]},
+    {"tool": "odoo_call",  "args": {"model": "crm.lead", "method": "message_post", "args": [[42]], "kwargs": {"body": "Hello, processed by Nanobot", "message_type": "comment", "subtype_xmlid": "mail.mt_note"}}, "result": 123},
+    {"tool": "odoo_search","args": {"model": "crm.stage", "domain": [["name", "ilike", "IN PROGRESS"]], "limit": 1}, "result": [7]},
+    {"tool": "odoo_write", "args": {"model": "crm.lead", "ids": [42], "values": {"stage_id": 7}}, "result": true}
   ],
-  "summary": "Lead 42 (Acme Corp) was in the INITIAL stage. I posted the Nanobot message and moved it to IN PROGRESS."
+  "summary": "Lead 42 (Acme Corp) was in the INITIAL stage. I posted 'Hello, processed by Nanobot' and moved it to IN PROGRESS."
 }
 ```
 
@@ -145,3 +165,7 @@ Resposta:
 ```bash
 curl -X POST http://localhost:8000/v1/crm/process-initial-leads
 ```
+
+### Estender o conhecimento do Nanobot
+
+Para ensinar ao Nanobot novas tarefas de CRM, edite o arquivo `app/knowledge/odoo_crm.md`. Nenhuma alteração de código é necessária — o agente carrega o arquivo na inicialização.
