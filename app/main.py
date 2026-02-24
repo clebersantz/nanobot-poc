@@ -22,6 +22,7 @@ DEFAULT_ODOO_WORKFLOW_PATH = os.path.join(
     "crm_lead.md",
 )
 ODOO_WORKFLOW_PATH = os.getenv("ODOO_WORKFLOW_PATH", DEFAULT_ODOO_WORKFLOW_PATH)
+# Regex patterns are module-level to avoid recompilation on each webhook call.
 ODOO_CASE_PATTERN = re.compile(r"Case CRM Lead stage is\s+(.+):", re.IGNORECASE)
 ODOO_NOTE_PATTERN = re.compile(r'Add a Lead note\s+"(.+)"', re.IGNORECASE)
 ODOO_MOVE_PATTERN = re.compile(r"Move Lead to stage\s+(.+)\.$", re.IGNORECASE)
@@ -200,12 +201,15 @@ def _load_odoo_workflow() -> dict:
         line = raw_line.strip()
         if not line:
             continue
+        if line.startswith("#"):
+            continue
         case_match = ODOO_CASE_PATTERN.match(line)
         if case_match:
             current_stage = case_match.group(1).strip()
             workflow[current_stage] = {"message": None, "next_stage": None}
             continue
         if not current_stage:
+            # Ignore any lines before the first stage definition.
             continue
         note_match = ODOO_NOTE_PATTERN.match(line)
         if note_match:
