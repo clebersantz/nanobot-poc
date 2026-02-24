@@ -20,7 +20,8 @@ Nanobot POC is a nanobot.ai(https://github.com/nanobot-ai/nanobot)  AI Agent / R
 ```
 app/
   main.py          # All application logic: routes, helpers, HTML UI
-docs/              # All AI knowledge base documents
+docs/              # Documentation 
+  kb/              # All AI knowledge base documents
 Dockerfile         # Python 3.11-slim + Tesseract + Poppler
 docker-compose.yml # Single service, reads .env for OPENAI_API_KEY
 requirements.txt   # Python dependencies
