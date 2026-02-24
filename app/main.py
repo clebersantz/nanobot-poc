@@ -24,7 +24,7 @@ DEFAULT_ODOO_WORKFLOW_PATH = os.path.join(
 ODOO_WORKFLOW_PATH = os.getenv("ODOO_WORKFLOW_PATH", DEFAULT_ODOO_WORKFLOW_PATH)
 ODOO_CASE_PATTERN = re.compile(r"Case CRM Lead stage is\s+(.+):", re.IGNORECASE)
 ODOO_NOTE_PATTERN = re.compile(r'Add a Lead note\s+"(.+)"', re.IGNORECASE)
-ODOO_MOVE_PATTERN = re.compile(r"Move Lead to stage\s+(.+?)(?:\.)?$", re.IGNORECASE)
+ODOO_MOVE_PATTERN = re.compile(r"Move Lead to stage\s+(.+)\.$", re.IGNORECASE)
 
 app = FastAPI(title="Nanobot POC", description="Chat + OCR de PDFs via OpenAI")
 
@@ -195,6 +195,7 @@ def _load_odoo_workflow() -> dict:
 
     workflow: dict = {}
     current_stage: Optional[str] = None
+    unmatched_lines: List[str] = []
     for raw_line in content.splitlines():
         line = raw_line.strip()
         if not line:
@@ -213,6 +214,8 @@ def _load_odoo_workflow() -> dict:
         move_match = ODOO_MOVE_PATTERN.match(line)
         if move_match:
             workflow[current_stage]["next_stage"] = move_match.group(1).strip()
+            continue
+        unmatched_lines.append(line)
 
     if not workflow:
         raise HTTPException(
@@ -230,6 +233,14 @@ def _load_odoo_workflow() -> dict:
             detail=(
                 "Arquivo de conhecimento do workflow do Odoo incompleto para estágios: "
                 + ", ".join(sorted(missing))
+            ),
+        )
+    if unmatched_lines:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Arquivo de conhecimento do workflow do Odoo possui linhas inválidas: "
+                + "; ".join(unmatched_lines)
             ),
         )
     return workflow
