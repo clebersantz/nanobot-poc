@@ -183,14 +183,14 @@ def _retrieve_top_k(query: str, pages: List[dict], k: int) -> List[dict]:
 def _chunk_knowledge_text(content: str, source: str) -> List[dict]:
     chunks = [chunk.strip() for chunk in content.split("\n\n") if chunk.strip()]
     return [
-        {"section_index": f"{source}#{index}", "text": f"[{source}]\n{chunk}"}
+        {"section_id": f"{source}#{index}", "text": f"[{source}]\n{chunk}"}
         for index, chunk in enumerate(chunks, start=1)
     ]
 
 
 def _load_odoo_knowledge_sections() -> List[dict]:
     if os.path.isdir(ODOO_WORKFLOW_PATH):
-        md_files: List[str] = []
+        md_files = []
         for root, _, filenames in os.walk(ODOO_WORKFLOW_PATH):
             for filename in filenames:
                 if filename.lower().endswith(".md"):
