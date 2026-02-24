@@ -181,7 +181,7 @@ def _retrieve_top_k(query: str, pages: List[dict], k: int) -> List[dict]:
 
 
 def _chunk_knowledge_text(content: str, source: str) -> List[dict]:
-    """Split knowledge content by blank lines and tag each chunk with a section id."""
+    """Split content by blank lines into sections with {section_id: 'source#index', text}."""
     chunks = [chunk.strip() for chunk in content.split("\n\n") if chunk.strip()]
     return [
         {"section_id": f"{source}#{index}", "text": f"[{source}]\n{chunk}"}
@@ -190,7 +190,7 @@ def _chunk_knowledge_text(content: str, source: str) -> List[dict]:
 
 
 def _load_odoo_knowledge_sections() -> List[dict]:
-    """Load knowledge sections from a directory of Markdown files or a single file."""
+    """Load Markdown knowledge sections as dicts with section_id and text keys."""
     if os.path.isdir(ODOO_WORKFLOW_PATH):
         md_files = []
         for root, _, filenames in os.walk(ODOO_WORKFLOW_PATH):
