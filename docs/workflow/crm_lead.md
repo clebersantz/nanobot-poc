@@ -3,7 +3,7 @@
 Case CRM Lead stage is INITIAL:
   
     Add a Lead note "Hello! This Lead has been processed by CRM Lead AI Agent"
-    Move Lead to stage IN PROCESS
+    Move Lead to stage IN PROCESS.
 
 Case CRM Lead stage is IN PROCESS:
 

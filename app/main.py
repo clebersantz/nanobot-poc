@@ -22,6 +22,9 @@ DEFAULT_ODOO_WORKFLOW_PATH = os.path.join(
     "crm_lead.md",
 )
 ODOO_WORKFLOW_PATH = os.getenv("ODOO_WORKFLOW_PATH", DEFAULT_ODOO_WORKFLOW_PATH)
+ODOO_CASE_PATTERN = re.compile(r"Case CRM Lead stage is\s+(.+):", re.IGNORECASE)
+ODOO_NOTE_PATTERN = re.compile(r'Add a Lead note\s+"(.+)"', re.IGNORECASE)
+ODOO_MOVE_PATTERN = re.compile(r"Move Lead to stage\s+(.+?)(?:\.)?$", re.IGNORECASE)
 
 app = FastAPI(title="Nanobot POC", description="Chat + OCR de PDFs via OpenAI")
 
@@ -192,27 +195,24 @@ def _load_odoo_workflow() -> dict:
 
     workflow: dict = {}
     current_stage: Optional[str] = None
-    case_pattern = re.compile(r"Case CRM Lead stage is\s+(.+):", re.IGNORECASE)
-    note_pattern = re.compile(r'Add a Lead note\s+"(.+)"', re.IGNORECASE)
-    move_pattern = re.compile(r"Move Lead to stage\s+(.+)", re.IGNORECASE)
     for raw_line in content.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        case_match = case_pattern.match(line)
+        case_match = ODOO_CASE_PATTERN.match(line)
         if case_match:
             current_stage = case_match.group(1).strip()
             workflow[current_stage] = {"message": None, "next_stage": None}
             continue
         if not current_stage:
             continue
-        note_match = note_pattern.match(line)
+        note_match = ODOO_NOTE_PATTERN.match(line)
         if note_match:
             workflow[current_stage]["message"] = note_match.group(1).strip()
             continue
-        move_match = move_pattern.match(line)
+        move_match = ODOO_MOVE_PATTERN.match(line)
         if move_match:
-            workflow[current_stage]["next_stage"] = move_match.group(1).strip().rstrip(".")
+            workflow[current_stage]["next_stage"] = move_match.group(1).strip()
 
     if not workflow:
         raise HTTPException(
