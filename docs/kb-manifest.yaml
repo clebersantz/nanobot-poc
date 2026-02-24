@@ -1,0 +1,6 @@
+version: 1
+name: nanobot-poc-kb
+root: docs/kb
+include:
+  - "00-meta/**/*.md"
+  - "20-odoo/**/*.md"

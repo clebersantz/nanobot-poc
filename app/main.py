@@ -1,20 +1,35 @@
-import os
+import json
 import math
+import os
 import tempfile
-from typing import List
+import xmlrpc.client
+from typing import List, Optional, Tuple
 
 import pytesseract
 from pdf2image import convert_from_path
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from openai import OpenAI
+from pydantic import BaseModel
 
 MAX_PAGES_PER_PDF = int(os.getenv("MAX_PAGES_PER_PDF", "5"))
 TOP_K_PAGES = int(os.getenv("TOP_K_PAGES", "3"))
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DEFAULT_ODOO_WORKFLOW_PATH = os.path.join(BASE_DIR, "docs", "kb")
+ODOO_WORKFLOW_PATH = os.getenv("ODOO_WORKFLOW_PATH", DEFAULT_ODOO_WORKFLOW_PATH)
+ODOO_WORKFLOW_AI_MODEL = os.getenv("ODOO_WORKFLOW_AI_MODEL", "gpt-4o-mini")
+try:
+    ODOO_WORKFLOW_MAX_SECTIONS = int(os.getenv("ODOO_WORKFLOW_MAX_SECTIONS", "2"))
+except ValueError:
+    ODOO_WORKFLOW_MAX_SECTIONS = 2
 
 app = FastAPI(title="Nanobot POC", description="Chat + OCR de PDFs via OpenAI")
 
 client = OpenAI()  # reads OPENAI_API_KEY from env automatically
+
+
+class OdooLeadWebhook(BaseModel):
+    lead_id: int
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +180,204 @@ def _retrieve_top_k(query: str, pages: List[dict], k: int) -> List[dict]:
     return [p for p, _ in scored[:k]]
 
 
+def _chunk_knowledge_text(content: str, source: str) -> List[dict]:
+    """Split content on blank lines, returning only non-empty chunks.
+
+    Args:
+        content: Raw markdown content.
+        source: Relative path from ODOO_WORKFLOW_PATH used in section_id and text prefix.
+
+    Returns:
+        List of dicts with keys section_id ('source#index') and text prefixed with
+        [source] where source is the relative file path.
+    """
+    chunks = [chunk.strip() for chunk in content.split("\n\n") if chunk.strip()]
+    return [
+        {"section_id": f"{source}#{index}", "text": f"[{source}]\n{chunk}"}
+        for index, chunk in enumerate(chunks, start=1)
+    ]
+
+
+def _load_odoo_knowledge_sections() -> List[dict]:
+    """Load knowledge sections from a file or directory of Markdown files.
+
+    When a directory is provided, all .md files are loaded recursively. When a file is
+    provided, it is loaded directly. Returns dicts with section_id 'source#index' and
+    text prefixed by [source].
+
+    Returns:
+        List of dicts with keys section_id ('source#index') and text prefixed with
+        [source] where source is the relative file path.
+    """
+    if os.path.isdir(ODOO_WORKFLOW_PATH):
+        md_files = []
+        for root, _, filenames in os.walk(ODOO_WORKFLOW_PATH):
+            for filename in filenames:
+                if filename.lower().endswith(".md"):
+                    md_files.append(os.path.join(root, filename))
+        if not md_files:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Nenhum arquivo Markdown encontrado em: {ODOO_WORKFLOW_PATH}",
+            )
+        md_files.sort()
+        sections: List[dict] = []
+        for path in md_files:
+            with open(path, "r", encoding="utf-8") as handle:
+                content = handle.read()
+            if not content.strip():
+                continue
+            source = os.path.relpath(path, ODOO_WORKFLOW_PATH)
+            sections.extend(_chunk_knowledge_text(content, source))
+    else:
+        try:
+            with open(ODOO_WORKFLOW_PATH, "r", encoding="utf-8") as handle:
+                content = handle.read()
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Base de conhecimento do Odoo não encontrada: {ODOO_WORKFLOW_PATH}",
+            )
+        if not content.strip():
+            raise HTTPException(
+                status_code=500,
+                detail=f"Base de conhecimento do Odoo vazia: {ODOO_WORKFLOW_PATH}",
+            )
+        sections = _chunk_knowledge_text(content, os.path.basename(ODOO_WORKFLOW_PATH))
+    if not sections:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Base de conhecimento do Odoo sem conteúdo válido: {ODOO_WORKFLOW_PATH}",
+        )
+    return sections
+
+
+def _build_workflow_context(sections: List[dict], stage_name: str) -> str:
+    """Retrieve top-k sections by semantic similarity, falling back if retrieval fails.
+
+    Falls back to all sections if embedding or ranking errors occur.
+
+    Args:
+        sections: Knowledge sections with text to rank.
+        stage_name: Current CRM Lead stage.
+
+    Returns:
+        Knowledge context string for the AI agent.
+    """
+    try:
+        top_sections = _retrieve_top_k(
+            f"CRM Lead stage {stage_name}",
+            sections,
+            min(ODOO_WORKFLOW_MAX_SECTIONS, len(sections)),
+        )
+    except Exception:
+        return "\n\n".join(section["text"] for section in sections)
+    if not top_sections:
+        return "\n\n".join(section["text"] for section in sections)
+    return "\n\n".join(section["text"] for section in top_sections)
+
+
+def _resolve_odoo_workflow_action(sections: List[dict], stage_name: str) -> Optional[dict]:
+    """Use the AI model to map stage + knowledge into message/next_stage or None.
+
+    Args:
+        sections: Knowledge sections used as context.
+        stage_name: Current CRM Lead stage.
+
+    Returns:
+        Dict with message and next_stage keys, or None when no action applies.
+    """
+    system_prompt = (
+        "You are a CRM Lead AI Agent. Use only the knowledge base snippets provided. "
+        "Given the current CRM Lead stage, decide the next action based on the knowledge base. "
+        "Respond with JSON only: {\"message\": string|null, \"next_stage\": string|null}. "
+        "Empty strings are invalid; use null instead. If no action applies, use null for both fields."
+    )
+    knowledge_context = _build_workflow_context(sections, stage_name)
+    user_prompt = f"Knowledge base snippets:\n{knowledge_context}\n\nCurrent stage: {stage_name}\n"
+    try:
+        completion = client.chat.completions.create(
+            model=ODOO_WORKFLOW_AI_MODEL,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+    except Exception:
+        raise HTTPException(status_code=502, detail="Erro ao comunicar com o serviço de workflow.")
+
+    content = completion.choices[0].message.content or ""
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=502, detail="Resposta inválida do agente de workflow.")
+
+    message = payload.get("message")
+    next_stage = payload.get("next_stage")
+    if message is None and next_stage is None:
+        return None
+    if message is not None and (not isinstance(message, str) or not message):
+        raise HTTPException(status_code=502, detail="Campo message inválido no workflow.")
+    if next_stage is not None and (not isinstance(next_stage, str) or not next_stage):
+        raise HTTPException(status_code=502, detail="Campo next_stage inválido no workflow.")
+    return {"message": message, "next_stage": next_stage}
+
+
+def _get_odoo_connection():
+    env_map = {
+        "ODOO_URL": os.getenv("ODOO_URL"),
+        "ODOO_DB": os.getenv("ODOO_DB"),
+        "ODOO_USER": os.getenv("ODOO_USER"),
+        "ODOO_API_KEY": os.getenv("ODOO_API_KEY"),
+    }
+    missing = [name for name, value in env_map.items() if not value]
+    if missing:
+        raise HTTPException(status_code=500, detail=f"Variáveis de ambiente ODOO ausentes: {', '.join(missing)}")
+    common = xmlrpc.client.ServerProxy(f"{env_map['ODOO_URL']}/xmlrpc/2/common")
+    uid = common.authenticate(env_map["ODOO_DB"], env_map["ODOO_USER"], env_map["ODOO_API_KEY"], {})
+    if not uid:
+        raise HTTPException(status_code=502, detail="Falha ao autenticar no ODOO.")
+    models = xmlrpc.client.ServerProxy(f"{env_map['ODOO_URL']}/xmlrpc/2/object")
+    return models, env_map["ODOO_DB"], uid, env_map["ODOO_API_KEY"]
+
+
+def _get_lead_stage(
+    models: xmlrpc.client.ServerProxy,
+    db: str,
+    uid: int,
+    api_key: str,
+    lead_id: int,
+) -> Optional[Tuple[int, str]]:
+    leads = models.execute_kw(db, uid, api_key, "crm.lead", "read", [[lead_id], ["stage_id"]])
+    if not leads:
+        return None
+    stage = leads[0].get("stage_id")
+    if isinstance(stage, list) and len(stage) >= 2:
+        return stage[0], stage[1]
+    return None
+
+
+def _get_stage_id(
+    models: xmlrpc.client.ServerProxy,
+    db: str,
+    uid: int,
+    api_key: str,
+    stage_name: str,
+) -> Optional[int]:
+    stage_ids = models.execute_kw(
+        db,
+        uid,
+        api_key,
+        "crm.stage",
+        "search",
+        [[["name", "=", stage_name]]],
+        {"limit": 1},
+    )
+    return stage_ids[0] if stage_ids else None
+
+
 # ---------------------------------------------------------------------------
 # POST /v1/chat
 # ---------------------------------------------------------------------------
@@ -250,3 +463,74 @@ async def ocr(
                 raise HTTPException(status_code=422, detail=f"Erro ao processar '{upload.filename}': {exc}")
             result[upload.filename] = pages
     return JSONResponse(result)
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/nanobot-poc/odoo/webhook/crm/lead
+# ---------------------------------------------------------------------------
+
+@app.post("/v1/nanobot-poc/odoo/webhook/crm/lead", summary="Webhook ODOO CRM Lead")
+def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
+    knowledge_sections = _load_odoo_knowledge_sections()
+    models, db, uid, api_key = _get_odoo_connection()
+    try:
+        lead_stage = _get_lead_stage(models, db, uid, api_key, payload.lead_id)
+    except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
+        raise HTTPException(status_code=502, detail="Erro ao consultar lead no ODOO.")
+
+    if not lead_stage:
+        raise HTTPException(status_code=404, detail="Lead não encontrado no ODOO.")
+
+    _, stage_name = lead_stage
+    action = _resolve_odoo_workflow_action(knowledge_sections, stage_name)
+    if not action:
+        return JSONResponse(
+            {"status": "ignored", "lead_id": payload.lead_id, "current_stage": stage_name}
+        )
+
+    message = action.get("message")
+    next_stage_name = action.get("next_stage")
+    if message:
+        try:
+            models.execute_kw(
+                db,
+                uid,
+                api_key,
+                "crm.lead",
+                "message_post",
+                [[payload.lead_id], {"body": message}],
+            )
+        except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
+            raise HTTPException(status_code=502, detail="Erro ao registrar mensagem no ODOO.")
+
+    if next_stage_name:
+        try:
+            next_stage_id = _get_stage_id(models, db, uid, api_key, next_stage_name)
+        except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
+            raise HTTPException(status_code=502, detail="Erro ao buscar estágio no ODOO.")
+        if not next_stage_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Stage '{next_stage_name}' não encontrado no ODOO.",
+            )
+
+        try:
+            models.execute_kw(
+                db,
+                uid,
+                api_key,
+                "crm.lead",
+                "write",
+                [[payload.lead_id], {"stage_id": next_stage_id}],
+            )
+        except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
+            raise HTTPException(status_code=502, detail="Erro ao atualizar estágio do lead no ODOO.")
+
+    return JSONResponse(
+        {
+            "status": "processed",
+            "lead_id": payload.lead_id,
+            "from_stage": stage_name,
+            "to_stage": next_stage_name,
+        }
+    )
