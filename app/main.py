@@ -181,7 +181,7 @@ def _retrieve_top_k(query: str, pages: List[dict], k: int) -> List[dict]:
 
 
 def _chunk_knowledge_text(content: str, source: str) -> List[dict]:
-    """Split content on blank lines into chunks.
+    """Split content on blank lines into non-empty chunks.
 
     Args:
         content: Raw markdown content.
