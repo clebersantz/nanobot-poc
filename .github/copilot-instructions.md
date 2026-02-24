@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Nanobot POC is a nanobot.ai  AI Agent / RAG that helps ODOO CRM Leads Tasks
+Nanobot POC is a nanobot.ai(https://github.com/nanobot-ai/nanobot)  AI Agent / RAG that helps ODOO (https://github.com/odoo/odoo) CRM Leads Tasks
 
 ## Tech Stack
 
@@ -12,7 +12,7 @@ Nanobot POC is a nanobot.ai  AI Agent / RAG that helps ODOO CRM Leads Tasks
 - **LLM:** OpenAI `gpt-4o-mini` for chat completions
 - **Embeddings:** OpenAI `text-embedding-3-small` for semantic retrieval
 - **Deployment:** Docker / Docker Compose (single container, port 8000)
-- **ODOO Version** ODOO 18 OCA/Communitie
+- **ODOO Version** ODOO 18 OCA/Community
 - **XML-RPC**
 
 ## Repository Structure
