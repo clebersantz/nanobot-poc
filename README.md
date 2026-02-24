@@ -100,21 +100,24 @@ docker compose up --build
 | `ODOO_PASSWORD` | *(obrigatório para CRM)* | Senha ou API key do Odoo |
 | `ODOO_INITIAL_STAGE` | `INITIAL` | Nome do estágio inicial do CRM |
 | `ODOO_IN_PROGRESS_STAGE` | `IN PROGRESS` | Nome do estágio "em andamento" do CRM |
+| `CRM_AGENT_MAX_TURNS` | `10` | Número máximo de rodadas do agente IA |
 
 ---
 
 ## Integração Odoo CRM
 
-O Nanobot pode se integrar ao Odoo CRM via XML-RPC para:
+O Nanobot usa um **agente de IA** (OpenAI tool-calling) para processar leads do Odoo CRM. Ao invés de executar passos fixos em código, o agente usa seu conhecimento para decidir quais ações executar.
 
-1. **Processar leads pelo webhook** (`POST /v1/crm/webhook`):
-   - Recebe `{"lead_id": 42}` via HTTP POST
-   - Posta a mensagem `"Hello, processed by Nanobot"` no lead
-   - Move o lead para o estágio **IN PROGRESS**
+### Como funciona o webhook (`POST /v1/crm/webhook`)
 
-2. **Processar todos os leads no estágio INITIAL** (`POST /v1/crm/process-initial-leads`):
-   - Busca todos os leads no estágio **INITIAL**
-   - Para cada lead: posta a mensagem e move para **IN PROGRESS**
+1. O usuário move um lead para o estágio **INITIAL** no Odoo e o Odoo dispara o webhook.
+2. O Nanobot recebe `{"lead_id": 42}` e inicia um agente OpenAI com as seguintes ferramentas disponíveis:
+   - `get_lead_info` — busca detalhes do lead (nome, estágio atual, etc.)
+   - `list_crm_stages` — lista todos os estágios do pipeline
+   - `post_message_on_lead` — posta uma mensagem no chatter do lead
+   - `move_lead_to_stage` — move o lead para um novo estágio
+3. O agente **inspeciona o lead**, verifica o estágio, posta `"Hello, processed by Nanobot"` e move o lead para **IN PROGRESS** — tudo decidido pela IA usando seu conhecimento de CRM.
+4. A resposta inclui as ações executadas e um resumo em linguagem natural.
 
 ### Exemplo de chamada ao webhook
 
@@ -126,5 +129,19 @@ curl -X POST http://localhost:8000/v1/crm/webhook \
 
 Resposta:
 ```json
-{"lead_id": 42, "status": "processed"}
+{
+  "lead_id": 42,
+  "actions": [
+    {"tool": "get_lead_info", "args": {"lead_id": 42}, "result": {"id": 42, "name": "Acme Corp", "stage_name": "INITIAL"}},
+    {"tool": "post_message_on_lead", "args": {"lead_id": 42, "message": "Hello, processed by Nanobot"}, "result": {"lead_id": 42, "message_posted": "Hello, processed by Nanobot"}},
+    {"tool": "move_lead_to_stage", "args": {"lead_id": 42, "stage_name": "IN PROGRESS"}, "result": {"lead_id": 42, "moved_to_stage": "IN PROGRESS"}}
+  ],
+  "summary": "Lead 42 (Acme Corp) was in the INITIAL stage. I posted the Nanobot message and moved it to IN PROGRESS."
+}
+```
+
+### Processar todos os leads INITIAL de uma vez
+
+```bash
+curl -X POST http://localhost:8000/v1/crm/process-initial-leads
 ```

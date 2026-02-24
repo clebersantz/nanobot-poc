@@ -95,23 +95,60 @@ def move_lead_to_stage(models: xmlrpc.client.ServerProxy, uid: int, lead_id: int
     )
 
 
-def process_lead(lead_id: int) -> dict:
-    """Post the nanobot message and move lead to IN PROGRESS.
+# ---------------------------------------------------------------------------
+# OpenAI tool-callable functions
+# These are standalone wrappers used by the AI agent loop in the webhook.
+# Each function authenticates independently so they can be called by the LLM.
+# ---------------------------------------------------------------------------
 
-    Returns a dict with the result for the processed lead.
-    Raises ValueError if the lead does not exist in Odoo.
-    """
+def tool_get_lead_info(lead_id: int) -> dict:
+    """Return details of a single CRM lead including its current stage name."""
     uid = _get_uid()
     models = _models_proxy()
-    # Verify the lead exists
-    existing = _execute(models, uid, "crm.lead", "search", [["id", "=", lead_id]], limit=1)
-    if not existing:
-        raise ValueError(f"Lead with id {lead_id} not found in Odoo.")
-    in_progress_stage_id = get_stage_id(models, uid, ODOO_IN_PROGRESS_STAGE)
-    post_message_on_lead(models, uid, lead_id, NANOBOT_MESSAGE)
-    move_lead_to_stage(models, uid, lead_id, in_progress_stage_id)
-    return {"lead_id": lead_id, "status": "processed"}
+    records = _execute(
+        models, uid, "crm.lead", "read",
+        [lead_id],
+        fields=["id", "name", "stage_id", "description", "partner_id", "user_id"],
+    )
+    if not records:
+        return {"error": f"Lead {lead_id} not found."}
+    rec = records[0]
+    # stage_id is returned as [id, name] by Odoo
+    rec["stage_name"] = rec["stage_id"][1] if isinstance(rec["stage_id"], list) else str(rec["stage_id"])
+    return rec
 
+
+def tool_list_crm_stages() -> list[dict]:
+    """Return all available CRM pipeline stages (id and name)."""
+    uid = _get_uid()
+    models = _models_proxy()
+    stage_ids = _execute(models, uid, "crm.stage", "search", [[]])
+    if not stage_ids:
+        return []
+    stages = _execute(models, uid, "crm.stage", "read", stage_ids, fields=["id", "name", "sequence"])
+    return stages
+
+
+def tool_post_message_on_lead(lead_id: int, message: str) -> dict:
+    """Post a chatter note on a CRM lead and return a confirmation."""
+    uid = _get_uid()
+    models = _models_proxy()
+    post_message_on_lead(models, uid, lead_id, message)
+    return {"lead_id": lead_id, "message_posted": message}
+
+
+def tool_move_lead_to_stage_by_name(lead_id: int, stage_name: str) -> dict:
+    """Move a CRM lead to the stage identified by *stage_name* and return a confirmation."""
+    uid = _get_uid()
+    models = _models_proxy()
+    stage_id = get_stage_id(models, uid, stage_name)
+    move_lead_to_stage(models, uid, lead_id, stage_id)
+    return {"lead_id": lead_id, "moved_to_stage": stage_name}
+
+
+# ---------------------------------------------------------------------------
+# Batch helper (non-AI path)
+# ---------------------------------------------------------------------------
 
 def process_all_initial_leads() -> list[dict]:
     """Process every lead currently in the INITIAL stage.
@@ -136,3 +173,4 @@ def process_all_initial_leads() -> list[dict]:
         move_lead_to_stage(models, uid, lead_id, in_progress_stage_id)
         results.append({"lead_id": lead_id, "name": lead.get("name"), "status": "processed"})
     return results
+
