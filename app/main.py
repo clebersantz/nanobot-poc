@@ -198,14 +198,33 @@ def _load_odoo_workflow() -> str:
     return content
 
 
+def _build_workflow_context(workflow: str, stage_name: str) -> str:
+    sections = [section.strip() for section in workflow.split("\n\n") if section.strip()]
+    if len(sections) <= 1:
+        return workflow
+    candidates = [{"page": index, "text": section} for index, section in enumerate(sections, start=1)]
+    try:
+        top_sections = _retrieve_top_k(
+            f"CRM Lead stage {stage_name}",
+            candidates,
+            min(2, len(candidates)),
+        )
+    except Exception:
+        return workflow
+    if not top_sections:
+        return workflow
+    return "\n\n".join(section["text"] for section in top_sections)
+
+
 def _resolve_odoo_workflow_action(workflow: str, stage_name: str) -> Optional[dict]:
     system_prompt = (
-        "You are a CRM Lead AI Agent. Use only the workflow text provided. "
-        "Given the current CRM Lead stage, decide the next action. "
+        "You are a CRM Lead AI Agent. Use only the knowledge base snippets provided. "
+        "Given the current CRM Lead stage, decide the next action based on the knowledge base. "
         "Respond with JSON only: {\"message\": string|null, \"next_stage\": string|null}. "
         "Empty strings are invalid; use null instead. If no action applies, use null for both fields."
     )
-    user_prompt = f"Workflow:\n{workflow}\n\nCurrent stage: {stage_name}\n"
+    knowledge_context = _build_workflow_context(workflow, stage_name)
+    user_prompt = f"Knowledge base snippets:\n{knowledge_context}\n\nCurrent stage: {stage_name}\n"
     try:
         completion = client.chat.completions.create(
             model=ODOO_WORKFLOW_AI_MODEL,
