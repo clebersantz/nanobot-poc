@@ -181,7 +181,7 @@ def _retrieve_top_k(query: str, pages: List[dict], k: int) -> List[dict]:
 
 
 def _chunk_knowledge_text(content: str, source: str) -> List[dict]:
-    """Split content by blank lines into sections with {section_id: 'source#index', text}."""
+    """Split content on blank lines into chunks with section_id 'source#index' and [source] text."""
     chunks = [chunk.strip() for chunk in content.split("\n\n") if chunk.strip()]
     return [
         {"section_id": f"{source}#{index}", "text": f"[{source}]\n{chunk}"}
@@ -190,7 +190,12 @@ def _chunk_knowledge_text(content: str, source: str) -> List[dict]:
 
 
 def _load_odoo_knowledge_sections() -> List[dict]:
-    """Load Markdown knowledge sections as dicts with section_id and text keys."""
+    """Load knowledge sections from a file or directory of Markdown files.
+
+    When a directory is provided, all .md files are loaded recursively. When a file is
+    provided, it is loaded directly. Returns dicts with section_id 'source#index' and
+    text prefixed by [source].
+    """
     if os.path.isdir(ODOO_WORKFLOW_PATH):
         md_files = []
         for root, _, filenames in os.walk(ODOO_WORKFLOW_PATH):
@@ -235,6 +240,7 @@ def _load_odoo_knowledge_sections() -> List[dict]:
 
 
 def _build_workflow_context(sections: List[dict], stage_name: str) -> str:
+    """Retrieve top-k sections by semantic similarity, falling back to all on error."""
     try:
         top_sections = _retrieve_top_k(
             f"CRM Lead stage {stage_name}",
@@ -249,6 +255,7 @@ def _build_workflow_context(sections: List[dict], stage_name: str) -> str:
 
 
 def _resolve_odoo_workflow_action(sections: List[dict], stage_name: str) -> Optional[dict]:
+    """Use the AI model to map stage + knowledge into message/next_stage or None."""
     system_prompt = (
         "You are a CRM Lead AI Agent. Use only the knowledge base snippets provided. "
         "Given the current CRM Lead stage, decide the next action based on the knowledge base. "
