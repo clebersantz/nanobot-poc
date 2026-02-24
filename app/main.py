@@ -15,12 +15,7 @@ from pydantic import BaseModel
 MAX_PAGES_PER_PDF = int(os.getenv("MAX_PAGES_PER_PDF", "5"))
 TOP_K_PAGES = int(os.getenv("TOP_K_PAGES", "3"))
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-DEFAULT_ODOO_WORKFLOW_PATH = os.path.join(
-    BASE_DIR,
-    "docs",
-    "workflow",
-    "crm_lead.md",
-)
+DEFAULT_ODOO_WORKFLOW_PATH = os.path.join(BASE_DIR, "docs", "kb")
 ODOO_WORKFLOW_PATH = os.getenv("ODOO_WORKFLOW_PATH", DEFAULT_ODOO_WORKFLOW_PATH)
 ODOO_WORKFLOW_AI_MODEL = os.getenv("ODOO_WORKFLOW_AI_MODEL", "gpt-4o-mini")
 try:
@@ -185,52 +180,80 @@ def _retrieve_top_k(query: str, pages: List[dict], k: int) -> List[dict]:
     return [p for p, _ in scored[:k]]
 
 
-def _load_odoo_workflow() -> str:
-    try:
-        with open(ODOO_WORKFLOW_PATH, "r", encoding="utf-8") as handle:
-            content = handle.read()
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Arquivo de conhecimento do workflow do Odoo não encontrado: {ODOO_WORKFLOW_PATH}",
-        )
-    if not content.strip():
-        raise HTTPException(
-            status_code=500,
-            detail=f"Arquivo de conhecimento do workflow do Odoo vazio: {ODOO_WORKFLOW_PATH}",
-        )
-    return content
-
-
-def _build_workflow_context(workflow: str, stage_name: str) -> str:
-    sections = [section.strip() for section in workflow.split("\n\n") if section.strip()]
-    if len(sections) <= 1:
-        return workflow
-    candidates = [
-        {"section_id": index, "text": section}
-        for index, section in enumerate(sections, start=1)
+def _chunk_knowledge_text(content: str, source: str) -> List[dict]:
+    chunks = [chunk.strip() for chunk in content.split("\n\n") if chunk.strip()]
+    return [
+        {"section_index": f"{source}#{index}", "text": f"[{source}]\n{chunk}"}
+        for index, chunk in enumerate(chunks, start=1)
     ]
+
+
+def _load_odoo_knowledge_sections() -> List[dict]:
+    if os.path.isdir(ODOO_WORKFLOW_PATH):
+        md_files: List[str] = []
+        for root, _, filenames in os.walk(ODOO_WORKFLOW_PATH):
+            for filename in filenames:
+                if filename.lower().endswith(".md"):
+                    md_files.append(os.path.join(root, filename))
+        if not md_files:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Nenhum arquivo Markdown encontrado em: {ODOO_WORKFLOW_PATH}",
+            )
+        md_files.sort()
+        sections: List[dict] = []
+        for path in md_files:
+            with open(path, "r", encoding="utf-8") as handle:
+                content = handle.read()
+            if not content.strip():
+                continue
+            source = os.path.relpath(path, ODOO_WORKFLOW_PATH)
+            sections.extend(_chunk_knowledge_text(content, source))
+    else:
+        try:
+            with open(ODOO_WORKFLOW_PATH, "r", encoding="utf-8") as handle:
+                content = handle.read()
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Base de conhecimento do Odoo não encontrada: {ODOO_WORKFLOW_PATH}",
+            )
+        if not content.strip():
+            raise HTTPException(
+                status_code=500,
+                detail=f"Base de conhecimento do Odoo vazia: {ODOO_WORKFLOW_PATH}",
+            )
+        sections = _chunk_knowledge_text(content, os.path.basename(ODOO_WORKFLOW_PATH))
+    if not sections:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Base de conhecimento do Odoo sem conteúdo válido: {ODOO_WORKFLOW_PATH}",
+        )
+    return sections
+
+
+def _build_workflow_context(sections: List[dict], stage_name: str) -> str:
     try:
         top_sections = _retrieve_top_k(
             f"CRM Lead stage {stage_name}",
-            candidates,
-            min(ODOO_WORKFLOW_MAX_SECTIONS, len(candidates)),
+            sections,
+            min(ODOO_WORKFLOW_MAX_SECTIONS, len(sections)),
         )
     except Exception:
-        return workflow
+        return "\n\n".join(section["text"] for section in sections)
     if not top_sections:
-        return workflow
+        return "\n\n".join(section["text"] for section in sections)
     return "\n\n".join(section["text"] for section in top_sections)
 
 
-def _resolve_odoo_workflow_action(workflow: str, stage_name: str) -> Optional[dict]:
+def _resolve_odoo_workflow_action(sections: List[dict], stage_name: str) -> Optional[dict]:
     system_prompt = (
         "You are a CRM Lead AI Agent. Use only the knowledge base snippets provided. "
         "Given the current CRM Lead stage, decide the next action based on the knowledge base. "
         "Respond with JSON only: {\"message\": string|null, \"next_stage\": string|null}. "
         "Empty strings are invalid; use null instead. If no action applies, use null for both fields."
     )
-    knowledge_context = _build_workflow_context(workflow, stage_name)
+    knowledge_context = _build_workflow_context(sections, stage_name)
     user_prompt = f"Knowledge base snippets:\n{knowledge_context}\n\nCurrent stage: {stage_name}\n"
     try:
         completion = client.chat.completions.create(
@@ -408,7 +431,7 @@ async def ocr(
 
 @app.post("/v1/nanobot-poc/odoo/webhook/crm/lead", summary="Webhook ODOO CRM Lead")
 def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
-    workflow = _load_odoo_workflow()
+    knowledge_sections = _load_odoo_knowledge_sections()
     models, db, uid, api_key = _get_odoo_connection()
     try:
         lead_stage = _get_lead_stage(models, db, uid, api_key, payload.lead_id)
@@ -419,7 +442,7 @@ def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
         raise HTTPException(status_code=404, detail="Lead não encontrado no ODOO.")
 
     _, stage_name = lead_stage
-    action = _resolve_odoo_workflow_action(workflow, stage_name)
+    action = _resolve_odoo_workflow_action(knowledge_sections, stage_name)
     if not action:
         return JSONResponse(
             {"status": "ignored", "lead_id": payload.lead_id, "current_stage": stage_name}

@@ -88,6 +88,6 @@ docker compose up --build
 | `ODOO_DB` | *(obrigatório para ODOO)* | Nome do banco de dados do ODOO |
 | `ODOO_USER` | *(obrigatório para ODOO)* | Usuário do ODOO |
 | `ODOO_API_KEY` | *(obrigatório para ODOO)* | API Key do usuário ODOO para XML-RPC |
-| `ODOO_WORKFLOW_PATH` | `docs/workflow/crm_lead.md` | Caminho do arquivo de conhecimento do workflow ODOO |
+| `ODOO_WORKFLOW_PATH` | `docs/kb` | Caminho da base de conhecimento do ODOO (arquivo ou diretório) |
 | `ODOO_WORKFLOW_AI_MODEL` | `gpt-4o-mini` | Modelo OpenAI usado para interpretar o workflow do ODOO |
 | `ODOO_WORKFLOW_MAX_SECTIONS` | `2` | Máximo de trechos do workflow usados como base de conhecimento |
