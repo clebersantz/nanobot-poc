@@ -45,6 +45,9 @@ ODOO_CHECK_CONNECTION_COMMANDS = (
     "check connection with odoo",
     "check odoo connection",
     "test odoo connection",
+    "connect to odoo",
+    "conectar ao odoo",
+    "conectar com odoo",
     "verificar conexão com odoo",
     "verificar conexao com odoo",
 )
