@@ -11,9 +11,12 @@ POC simples estilo "nanobot" em FastAPI com Docker para **chat** e **OCR de PDFs
 | `GET /` | UI HTML com chat e upload múltiplo de PDFs |
 | `POST /v1/chat` | Recebe mensagem + PDFs, faz OCR, mini-retrieval por embeddings e responde via OpenAI |
 | `POST /v1/ocr` | OCR puro das páginas (debug) |
+| `POST /v1/nanobot-poc/odoo/webhook/crm/lead` | Webhook ODOO CRM para processar leads |
 | `GET /docs` | Swagger UI automático |
 
 ---
+
+Workflow ODOO CRM configurado em `app/knowledge/odoo_crm_lead_workflow.json`.
 
 ## Pré-requisitos
 
@@ -81,3 +84,7 @@ docker compose up --build
 | `OPENAI_API_KEY` | *(obrigatório)* | Chave de API da OpenAI |
 | `MAX_PAGES_PER_PDF` | `5` | Máximo de páginas por PDF para OCR |
 | `TOP_K_PAGES` | `3` | Top-K páginas mais relevantes enviadas ao LLM |
+| `ODOO_URL` | *(obrigatório para ODOO)* | URL base do ODOO (ex.: `https://odoo.suaempresa.com`) |
+| `ODOO_DB` | *(obrigatório para ODOO)* | Nome do banco de dados do ODOO |
+| `ODOO_USER` | *(obrigatório para ODOO)* | Usuário do ODOO |
+| `ODOO_API_KEY` | *(obrigatório para ODOO)* | API Key do usuário ODOO para XML-RPC |
