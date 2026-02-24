@@ -1,6 +1,6 @@
+import json
 import math
 import os
-import re
 import tempfile
 import xmlrpc.client
 from typing import List, Optional, Tuple
@@ -22,11 +22,6 @@ DEFAULT_ODOO_WORKFLOW_PATH = os.path.join(
     "crm_lead.md",
 )
 ODOO_WORKFLOW_PATH = os.getenv("ODOO_WORKFLOW_PATH", DEFAULT_ODOO_WORKFLOW_PATH)
-# Regex patterns are module-level to avoid recompilation on each webhook call.
-# Workflow parsing expects the exact English phrases defined in docs/workflow/crm_lead.md.
-ODOO_CASE_PATTERN = re.compile(r"Case CRM Lead stage is\s+(.+):", re.IGNORECASE)
-ODOO_NOTE_PATTERN = re.compile(r'Add a Lead note\s+"(.+)"', re.IGNORECASE)
-ODOO_MOVE_PATTERN = re.compile(r"Move Lead to stage\s+(.+?)(?:\.)?$", re.IGNORECASE)
 
 app = FastAPI(title="Nanobot POC", description="Chat + OCR de PDFs via OpenAI")
 
@@ -185,7 +180,7 @@ def _retrieve_top_k(query: str, pages: List[dict], k: int) -> List[dict]:
     return [p for p, _ in scored[:k]]
 
 
-def _load_odoo_workflow() -> dict:
+def _load_odoo_workflow() -> str:
     try:
         with open(ODOO_WORKFLOW_PATH, "r", encoding="utf-8") as handle:
             content = handle.read()
@@ -194,62 +189,48 @@ def _load_odoo_workflow() -> dict:
             status_code=500,
             detail=f"Arquivo de conhecimento do workflow do Odoo não encontrado: {ODOO_WORKFLOW_PATH}",
         )
+    if not content.strip():
+        raise HTTPException(
+            status_code=500,
+            detail=f"Arquivo de conhecimento do workflow do Odoo vazio: {ODOO_WORKFLOW_PATH}",
+        )
+    return content
 
-    workflow: dict = {}
-    current_stage: Optional[str] = None
-    unmatched_lines: List[str] = []
-    for line_number, raw_line in enumerate(content.splitlines(), start=1):
-        line = raw_line.strip()
-        if not line:
-            continue
-        # Skip markdown headers/preamble in the workflow file.
-        if line.startswith("#"):
-            continue
-        case_match = ODOO_CASE_PATTERN.match(line)
-        if case_match:
-            current_stage = case_match.group(1).strip()
-            workflow[current_stage] = {"message": None, "next_stage": None}
-            continue
-        if not current_stage:
-            # Ignore any lines before the first stage definition.
-            continue
-        note_match = ODOO_NOTE_PATTERN.match(line)
-        if note_match:
-            workflow[current_stage]["message"] = note_match.group(1).strip()
-            continue
-        move_match = ODOO_MOVE_PATTERN.match(line)
-        if move_match:
-            workflow[current_stage]["next_stage"] = move_match.group(1).strip()
-            continue
-        unmatched_lines.append(f"Line {line_number}: {line}")
 
-    if not workflow:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Arquivo de conhecimento do workflow do Odoo inválido: {ODOO_WORKFLOW_PATH}",
+def _resolve_odoo_workflow_action(workflow: str, stage_name: str) -> Optional[dict]:
+    system_prompt = (
+        "You are a CRM Lead AI Agent. Use only the workflow text provided. "
+        "Given the current CRM Lead stage, decide the next action. "
+        "Respond with JSON only: {\"message\": string|null, \"next_stage\": string|null}. "
+        "If no action applies, use null for both fields."
+    )
+    user_prompt = f"Workflow:\n{workflow}\n\nCurrent stage: {stage_name}\n"
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
         )
-    missing = [
-        stage
-        for stage, data in workflow.items()
-        if not data.get("message") or not data.get("next_stage")
-    ]
-    if missing:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Arquivo de conhecimento do workflow do Odoo incompleto para estágios: "
-                + ", ".join(sorted(missing))
-            ),
-        )
-    if unmatched_lines:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Arquivo de conhecimento do workflow do Odoo possui linhas inválidas: "
-                + "; ".join(unmatched_lines)
-            ),
-        )
-    return workflow
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Erro na API OpenAI: {exc}")
+
+    content = completion.choices[0].message.content or ""
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=502, detail="Resposta inválida do agente de workflow.")
+
+    message = payload.get("message")
+    next_stage = payload.get("next_stage")
+    if message is None and next_stage is None:
+        return None
+    if not isinstance(message, str) or not isinstance(next_stage, str) or not message or not next_stage:
+        raise HTTPException(status_code=502, detail="Resposta incompleta do agente de workflow.")
+    return {"message": message, "next_stage": next_stage}
 
 
 def _get_odoo_connection():
@@ -409,13 +390,13 @@ def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
         raise HTTPException(status_code=404, detail="Lead não encontrado no ODOO.")
 
     _, stage_name = lead_stage
-    stage_rules = workflow.get(stage_name)
-    if not stage_rules:
+    action = _resolve_odoo_workflow_action(workflow, stage_name)
+    if not action:
         return JSONResponse(
             {"status": "ignored", "lead_id": payload.lead_id, "current_stage": stage_name}
         )
 
-    next_stage_name = stage_rules["next_stage"]
+    next_stage_name = action["next_stage"]
     try:
         next_stage_id = _get_stage_id(models, db, uid, api_key, next_stage_name)
     except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
@@ -433,7 +414,7 @@ def odoo_crm_lead_webhook(payload: OdooLeadWebhook):
             api_key,
             "crm.lead",
             "message_post",
-            [[payload.lead_id], {"body": stage_rules["message"]}],
+            [[payload.lead_id], {"body": action["message"]}],
         )
     except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
         raise HTTPException(status_code=502, detail="Erro ao registrar mensagem no ODOO.")
