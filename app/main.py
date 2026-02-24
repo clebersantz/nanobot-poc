@@ -26,7 +26,7 @@ ODOO_WORKFLOW_PATH = os.getenv("ODOO_WORKFLOW_PATH", DEFAULT_ODOO_WORKFLOW_PATH)
 # Workflow parsing expects the exact English phrases defined in docs/workflow/crm_lead.md.
 ODOO_CASE_PATTERN = re.compile(r"Case CRM Lead stage is\s+(.+):", re.IGNORECASE)
 ODOO_NOTE_PATTERN = re.compile(r'Add a Lead note\s+"(.+)"', re.IGNORECASE)
-ODOO_MOVE_PATTERN = re.compile(r"Move Lead to stage\s+(.+?)\.$", re.IGNORECASE)
+ODOO_MOVE_PATTERN = re.compile(r"Move Lead to stage\s+(.+?)(?:\.)?$", re.IGNORECASE)
 
 app = FastAPI(title="Nanobot POC", description="Chat + OCR de PDFs via OpenAI")
 
@@ -198,7 +198,7 @@ def _load_odoo_workflow() -> dict:
     workflow: dict = {}
     current_stage: Optional[str] = None
     unmatched_lines: List[str] = []
-    for raw_line in content.splitlines():
+    for line_number, raw_line in enumerate(content.splitlines(), start=1):
         line = raw_line.strip()
         if not line:
             continue
@@ -221,7 +221,7 @@ def _load_odoo_workflow() -> dict:
         if move_match:
             workflow[current_stage]["next_stage"] = move_match.group(1).strip()
             continue
-        unmatched_lines.append(line)
+        unmatched_lines.append(f"linha {line_number}: {line}")
 
     if not workflow:
         raise HTTPException(
