@@ -203,7 +203,7 @@ def _resolve_odoo_workflow_action(workflow: str, stage_name: str) -> Optional[di
         "You are a CRM Lead AI Agent. Use only the workflow text provided. "
         "Given the current CRM Lead stage, decide the next action. "
         "Respond with JSON only: {\"message\": string|null, \"next_stage\": string|null}. "
-        "Use null instead of empty strings. If no action applies, use null for both fields."
+        "Empty strings are invalid; use null instead. If no action applies, use null for both fields."
     )
     user_prompt = f"Workflow:\n{workflow}\n\nCurrent stage: {stage_name}\n"
     try:
