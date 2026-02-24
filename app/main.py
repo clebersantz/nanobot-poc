@@ -3,6 +3,7 @@ import os
 import math
 import pathlib
 import tempfile
+import urllib.parse
 import xmlrpc.client
 from typing import List
 
@@ -21,9 +22,15 @@ TOP_K_PAGES = int(os.getenv("TOP_K_PAGES", "3"))
 # ---------------------------------------------------------------------------
 
 ODOO_URL = os.getenv("ODOO_URL", "")
+ODOO_PORT = os.getenv("ODOO_PORT", "")
 ODOO_DB = os.getenv("ODOO_DB", "")
 ODOO_USER = os.getenv("ODOO_USER", "")
-ODOO_API_KEY = os.getenv("ODOO_API_KEY", "")
+# Support both ODOO_PASSWORD and ODOO_API_KEY (ODOO_PASSWORD takes precedence).
+# Either value serves as the credential passed to common.authenticate() and
+# execute_kw(); ODOO_API_KEY is kept as an alias so existing usages throughout
+# this file continue to work without change.
+ODOO_PASSWORD = os.getenv("ODOO_PASSWORD", "") or os.getenv("ODOO_API_KEY", "")
+ODOO_API_KEY = ODOO_PASSWORD
 ODOO_STAGE_INITIAL = os.getenv("ODOO_STAGE_INITIAL", "INITIAL")
 ODOO_STAGE_IN_PROCESS = os.getenv("ODOO_STAGE_IN_PROCESS", "IN PROCESS")
 
@@ -257,16 +264,34 @@ def _get_kb_context(query: str) -> List[dict]:
 # ODOO XML-RPC helpers
 # ---------------------------------------------------------------------------
 
+def _odoo_build_url() -> str:
+    """Construct the ODOO base URL from ODOO_URL and optional ODOO_PORT.
+
+    ODOO_URL may be a bare hostname (e.g. "odoo") or a full URL
+    (e.g. "http://odoo:8069").  ODOO_PORT is only appended when the
+    parsed URL has no port already, preventing double-port URLs.
+    """
+    base_url = ODOO_URL
+    if not base_url.startswith(("http://", "https://")):
+        base_url = f"http://{base_url}"
+    if ODOO_PORT:
+        parsed = urllib.parse.urlparse(base_url)
+        if not parsed.port:
+            base_url = f"{base_url}:{ODOO_PORT}"
+    return base_url
+
+
 def _odoo_connect():
     """Authenticate to ODOO via XML-RPC and return (uid, models_proxy)."""
-    if not all([ODOO_URL, ODOO_DB, ODOO_USER, ODOO_API_KEY]):
+    if not all([ODOO_URL, ODOO_DB, ODOO_USER, ODOO_PASSWORD]):
         raise HTTPException(status_code=503, detail="ODOO connection not configured.")
     try:
-        common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
-        uid = common.authenticate(ODOO_DB, ODOO_USER, ODOO_API_KEY, {})
+        base_url = _odoo_build_url()
+        common = xmlrpc.client.ServerProxy(f"{base_url}/xmlrpc/2/common")
+        uid = common.authenticate(ODOO_DB, ODOO_USER, ODOO_PASSWORD, {})
         if not uid:
             raise HTTPException(status_code=503, detail="ODOO authentication failed.")
-        models_proxy = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
+        models_proxy = xmlrpc.client.ServerProxy(f"{base_url}/xmlrpc/2/object")
         return uid, models_proxy
     except HTTPException:
         raise
