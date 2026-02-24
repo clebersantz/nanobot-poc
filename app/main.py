@@ -221,7 +221,7 @@ def _load_odoo_workflow() -> dict:
         if move_match:
             workflow[current_stage]["next_stage"] = move_match.group(1).strip()
             continue
-        unmatched_lines.append(f"line {line_number}: {line}")
+        unmatched_lines.append(f"Line {line_number}: {line}")
 
     if not workflow:
         raise HTTPException(
